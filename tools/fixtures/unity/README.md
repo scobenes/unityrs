@@ -12,16 +12,20 @@ There are three runs for each Unity version, **2022.3.62f3** first and then
 All three menu items are under **Tools → unityrs** and come from the same
 **Editor** folder. Each folder is inside `UnityrsFixturesOutput` in the
 project that ran it. The main run also builds the optional coverage
-fixtures (two humanoid refusal probes). When Unity cannot provide one of
-them, `run.json` lists it as not covered and the dialog still says **ready**.
-The integer discrete binding is always listed as not covered.
+fixtures (two humanoid refusal probes). Both are required: when Unity cannot
+provide one, `run.json` lists it as not covered and the dialog says **built
+with errors**. The integer discrete binding is always listed as not covered.
 
-The main run also builds and records the 106 optional **body motion**
-fixtures (`body-…` in `run.json`, recordings in `replays/body`). They take
-longer than the rest: expect the run to take several minutes more, with the
-progress bar on **Recording body-…**. Each body rig, clip set and chain is
-built on its own, so a rig or clip setting Unity refuses is listed as not
-covered or failed in `run.json` without stopping the others. Send the whole
+The main run also builds and records the 1111 **body motion** fixtures
+(`body-…` in `run.json`, recordings in `replays/body`). They take longer
+than the rest: most are round 11's 987 replays (E5's clip and chain
+replays, about 0.55 MB each, 343 full-body clip replays of about 1.3 MB,
+and four muscle sweeps), so expect a much longer run and about 910 MB more
+output, with the progress bar on **Recording body-…**. Each body rig, clip
+set and chain is built on its own, so one Unity refuses does not stop the
+others, but every body case must record: one that does not (not covered or
+failed in `run.json`) makes the dialog say **built with errors**, since
+completion would refuse the run. Send the whole
 folder as before; nothing else changes in the steps below.
 
 1. Open the [unityrs repository on GitHub](https://github.com/scobenes/unityrs).
@@ -38,7 +42,9 @@ folder as before; nothing else changes in the steps below.
    scripts to finish importing.
 3. Exit Play Mode and close any animation preview. In Unity, choose
    **Tools → unityrs → Build and record all fixtures**. Save the scene if
-   Unity asks, then wait for the results dialog.
+   Unity asks, then wait for the results dialog. (**Build fixtures only**
+   records nothing: its dialog says **unityrs fixtures built, not recorded**,
+   and its output is not a run to send.)
 4. If the dialog says **unityrs fixtures ready** or **unityrs fixtures built
    with errors**, zip the folder named after your Unity version (e.g.
    `2022.3.62f3`) inside `UnityrsFixturesOutput`, and send the zip (USB stick
@@ -112,8 +118,11 @@ run that predates them, or one that reports either as not covered, is
 refused: rerun the main menu item with the current Editor folder.
 
 A run's body fixtures are optional as a group: an older run without any
-`body-…` row completes as before, and a newer one must list all 106. After
-`complete`, run the B1 adequacy checkpoint on each version's folder:
+`body-…` row completes as before, and a newer one must list all 124 earlier
+ones. A round 11 run (with `round.json`) completes only through
+`python3 -I tools/parity/anim_fixture_round11.py complete <folder>`, which
+requires all 852 listed and recorded. After `complete`, run
+the B1 adequacy checkpoint on each version's folder:
 
     python3 -I tools/parity/anim_body_adequacy.py <folder> --json report.json
 

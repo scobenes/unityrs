@@ -162,6 +162,104 @@ public static partial class AnimReplayRecorder
         }
     }
 
+    // Completion's response and scope checks, run here too so a capture that
+    // would fail them is never marked recorded (anim_fixture_round11.py
+    // check_response, anim_fixture_scope.py check_scope):
+    // - a muscle sweep's every single-muscle sample at one of MuscleValues turns
+    //   that muscle's bone, locally, LeastTurn degrees or more from the recorded
+    //   zero-vector sample;
+    // - an in-scope clip's every sample keeps the shoulder-hip twist, about the
+    //   up from the upper legs to the upper arms, within freeze v8's twist limit,
+    //   and each spine Left-Right value Unity played (GetHumanPose's read-back
+    //   of the sample) within its lateral limit. Completion checks the compiled
+    //   curve's value at each sample time; the Editor cannot read the compiled
+    //   track, so it checks what that track played.
+    const double LeastTurn = 0.25, TwistLimit = 0.07417649320975901, LateralLimit = 0.193359375;
+    static readonly string[] FrameBones = { "LeftUpperArm", "RightUpperArm", "LeftUpperLeg", "RightUpperLeg" };
+    static readonly string[] LateralMuscles = { "Spine Left-Right", "Chest Left-Right", "UpperChest Left-Right" };
+
+    static void CheckBodyResponse(HumanCapture capture, UnityrsFixtureBuilder.ReplayCase fixture, BodyHooks body)
+    {
+        string name = fixture.OutputName;
+        float Value(string bits) => BitConverter.ToSingle(BitConverter.GetBytes(
+            uint.Parse(bits, NumberStyles.HexNumber, CultureInfo.InvariantCulture)), 0);
+        double[] Values(string[] bits) => bits.Select(b => (double)Value(b)).ToArray();
+        Need(capture != null, "Body capture is not humanoid for " + name + ".");
+        var nodes = capture.humanoid.bones.ToDictionary(bone => bone.name, bone => bone.node, StringComparer.Ordinal);
+        if (fixture.Body.Variant == "muscle")
+        {
+            var zero = capture.samples.FirstOrDefault(sample => sample.muscles_f32.All(bits => bits == "00000000" || bits == "80000000"));
+            Need(zero != null, name + " records no zero-vector sample.");
+            foreach (var sample in capture.samples)
+            {
+                var values = sample.muscles_f32.Select(Value).ToArray();
+                var moved = Enumerable.Range(0, values.Length).Where(i => values[i] != 0).ToArray();
+                if (moved.Length != 1 || !UnityrsFixtureBuilder.MuscleValues.Contains(Math.Abs(values[moved[0]]))) continue;
+                var muscle = capture.humanoid.muscles[moved[0]];
+                int node = capture.humanoid.bones[muscle.bone].node;
+                Need(node >= 0, name + " sweeps " + muscle.name + " but maps no bone for it.");
+                double turn = Angle(Values(zero.pose.transforms[node].rotation), Values(sample.pose.transforms[node].rotation));
+                Need(turn * 180 / Math.PI >= LeastTurn, muscle.name + " at " + values[moved[0]].ToString("R", CultureInfo.InvariantCulture)
+                    + " turned no bone in " + name + ".");
+            }
+        }
+        if (fixture.Body.Kind == "clip" && fixture.Body.Spec.Scoped)
+        {
+            Need(FrameBones.All(bone => nodes.TryGetValue(bone, out int node) && node >= 0), name + " lacks a frame bone.");
+            var lateral = LateralMuscles.Select(muscle => Array.FindIndex(capture.humanoid.muscles, row => row.name == muscle)).ToArray();
+            Need(lateral.All(index => index >= 0), name + " lacks a spine Left-Right muscle.");
+            for (int k = 0; k < body.Samples.Count; k++)
+            {
+                var played = Values(body.Samples[k].readback_muscles);
+                foreach (int index in lateral)
+                    Need(index < played.Length && Math.Abs(played[index]) <= LateralLimit, name + " is in scope but "
+                        + capture.humanoid.muscles[index].name + " played " + (index < played.Length
+                        ? played[index].ToString("R", CultureInfo.InvariantCulture) : "nothing") + " at sample " + k
+                        + ", over the lateral limit " + LateralLimit.ToString("R", CultureInfo.InvariantCulture) + ".");
+                var points = FrameBones.Select(bone => Values(body.Samples[k].nodes[nodes[bone]].position)).ToArray();
+                double twist = ShoulderHipTwist(points);
+                Need(twist <= TwistLimit, name + " is in scope but its shoulder-hip twist at sample " + k + " is "
+                    + twist.ToString("R", CultureInfo.InvariantCulture) + " rad, over " + TwistLimit.ToString("R", CultureInfo.InvariantCulture) + ".");
+            }
+        }
+    }
+
+    // anim_reference.py angle: radians between two rotations, either sign.
+    static double Angle(double[] q, double[] r)
+    {
+        double Norm(double[] v) => Math.Sqrt(v.Sum(a => a * a));
+        double nq = Norm(q), nr = Norm(r);
+        q = q.Select(a => a / nq).ToArray();
+        r = r.Select(a => a / nr).ToArray();
+        if (q.Zip(r, (a, b) => a * b).Sum() < 0) r = r.Select(b => -b).ToArray();
+        return 4 * Math.Atan2(Norm(q.Zip(r, (a, b) => a - b).ToArray()), Norm(q.Zip(r, (a, b) => a + b).ToArray()));
+    }
+
+    // anim_body_model.py shoulder_hip_twist on world positions (upper arms, then
+    // upper legs); NaN, so over the limit, where it is undefined.
+    static double ShoulderHipTwist(double[][] p)
+    {
+        double[] Sub(double[] a, double[] b) => a.Zip(b, (x, y) => x - y).ToArray();
+        double Dot(double[] a, double[] b) => a.Zip(b, (x, y) => x * y).Sum();
+        double Norm(double[] v) => Math.Sqrt(Dot(v, v));
+        var up = Sub(p[0].Zip(p[1], (a, b) => a + b).ToArray(), p[2].Zip(p[3], (a, b) => a + b).ToArray());
+        if (!(Norm(up) > 0)) return double.NaN;
+        double length = Norm(up);
+        up = up.Select(v => v / length).ToArray();
+        double[] Flat(double[] v)
+        {
+            double along = Dot(v, up);
+            var moved = v.Zip(up, (a, b) => a - along * b).ToArray();
+            return Norm(moved) > 64 * Math.Pow(2, -53) * Norm(v) ? moved : null;
+        }
+        var top = Flat(Sub(p[1], p[0]));
+        var bottom = Flat(Sub(p[3], p[2]));
+        if (top == null || bottom == null) return double.NaN;
+        var cross = new[] { bottom[1] * top[2] - bottom[2] * top[1], bottom[2] * top[0] - bottom[0] * top[2],
+            bottom[0] * top[1] - bottom[1] * top[0] };
+        return Math.Abs(Math.Atan2(Dot(cross, up), Dot(bottom, top)));
+    }
+
     // The built Avatar maps exactly the body bones the case's schedule assumes,
     // and the F5 chain holds at this sample: the Animator node's scale, the
     // armature, the hips scale and every other mapped bone's authored offset.

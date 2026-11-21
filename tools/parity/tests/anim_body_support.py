@@ -67,17 +67,28 @@ def transform(t=(0, 0, 0), q=(0, 0, 0, 1), s=1.):
     return dict(translation=[bits(v) for v in t], rotation=[bits(v) for v in q], scale=[bits(s)] * 3)
 
 
-ANIMATOR_SCALE = {"scaled-animator": 1.25}
+# F5's armature exactly as freeze v8's chain admits it (chain.rs BETWEEN; Quaternion.Euler(-90, 0, 0) as Unity
+# records it, 0x3f3504f4). B2's own: no round 11 table moves B2's inputs.
+HALF = replay.f32_from_bits("3f3504f4")
+ARMATURE = ((0, .05, .1), (-HALF, 0, 0, HALF), .8)
+# Each synthetic chain rig's (F5 feature, size): freeze v8's four. Round 11's tests patch in their own rigs.
+RIG_FEATURES = {"scaled-animator": ("scaled-animator", 1), "large": ("", 1.5), "armature": ("armature", 1),
+                "hips-scale": ("hips-scale", 1)}
+
+
+def animator_scale(rig):
+    return 1.25 if RIG_FEATURES.get(rig, ("", 1))[0] == "scaled-animator" else 1.
 
 
 def rig_nodes(rig):
-    """Spec nodes and rest transforms, with F5's Animator, armature and hips scales."""
-    nodes, rest = [("", "HumanoidFixture"), ("0", "HumanoidRig")], [transform(), transform(
-        s=ANIMATOR_SCALE.get(rig, 1.))]
+    """Spec nodes and rest transforms, with F5's Animator, armature and hips scales (a sized rig's offsets
+    scaled, the hips' own offset too, never the armature's transform)."""
+    feature, size = RIG_FEATURES.get(rig, ("", 1))
+    nodes, rest = [("", "HumanoidFixture"), ("0", "HumanoidRig")], [transform(), transform(s=animator_scale(rig))]
     top, addresses, counts = "0", {"": "0"}, {}
-    if rig == "armature":
+    if feature == "armature":
         nodes.append(("0/0", "Armature"))
-        rest.append(transform((0, .05, .1), euler((-90, 0, 0), 4), .8))
+        rest.append(transform(*ARMATURE))
         top = addresses[""] = "0/0"
     for name, parent, offset in layout(rig):
         base = addresses[parent]
@@ -85,9 +96,9 @@ def rig_nodes(rig):
         counts[base] += 1
         addresses[name] = address
         nodes.append((address, name))
-        if name == "Hips" and rig == "armature":
-            rest.append(transform((0, .125, .8375), euler((90, 0, 0), 4)))
-        elif name == "Hips" and rig == "hips-scale":
+        if name == "Hips" and feature == "armature":
+            rest.append(transform((0, .125 * size, .8375 * size), euler((90, 0, 0), 4)))
+        elif name == "Hips" and feature == "hips-scale":
             rest.append(transform(tuple(1.2 * v for v in offset), s=1.2))
         else:
             rest.append(transform(offset))
@@ -203,7 +214,7 @@ def body_doc(name, run, *, samples=None):
         # recorder's conversion to the Animator divides by that scale again.
         turn = tolerance.matrix_quaternion(tolerance.product(frame(pose), rest_frame, transpose=True))
         body = centre()
-        rows.append(dict(readback_position=[bits(v / ANIMATOR_SCALE.get(rig, 1.)) for v in body],
+        rows.append(dict(readback_position=[bits(v / animator_scale(rig)) for v in body],
                          readback_rotation=[bits(v) for v in turn],
                          readback_muscles=[bits(v) for v in muscles],
                          world_position=[bits(v) for v in body], world_rotation=[bits(0)] * 3 + [bits(1)],
@@ -248,8 +259,9 @@ def animator(prop, rows):
                 object_keys=[], keys=rows)
 
 
-def clip_case(doc, variant_name):
-    """Give a clip case the authored curves, captured settings and built clip of its variant."""
+def clip_case(doc, variant_name, more=()):
+    """Give a clip case the authored curves, captured settings and built clip of its variant (and of `more`
+    curve groups besides)."""
     variant = CLIP_VARIANTS[variant_name]
     turn = euler((0, START_YAW if variant["start"] else 0, 0), 4)
     path, rotations = [], []
@@ -261,7 +273,7 @@ def clip_case(doc, variant_name):
         rotations.append(multiply(turn, euler(angles, 4)))
     bindings = [animator(f"RootT.{a}", keys(BODY_TIMES, [p[i] for p in path])) for i, a in enumerate("xyz")]
     bindings += [animator(f"RootQ.{a}", keys(BODY_TIMES, [q[i] for q in rotations])) for i, a in enumerate("xyzw")]
-    extras = distinguishing_curves(variant, list(MUSCLES))
+    extras = distinguishing_curves(variant, list(MUSCLES)) + list(more)
     bindings += [animator(prop, keys(times, values)) for group in extras for prop, _, times, values in group]
     doc["spec"]["evidence"]["editor"]["bindings"] = bindings
     flags = dict(zip(("loopBlendOrientation", "loopBlendPositionY", "loopBlendPositionXZ"), variant["bake"]))
@@ -280,6 +292,7 @@ def clip_case(doc, variant_name):
                  s=dict(x=1., y=1., z=1.))
     return {"m_MuscleClip": built | dict(m_HeightFromFeet=variant["height_from_feet"], m_Level=variant["level"],
                                          m_OrientationOffsetY=variant["orientation"], m_StartAtOrigin=True,
+                                         m_Mirror=False, m_LoopTime=False, m_LoopBlend=False, m_CycleOffset=0.,
                                          m_StartX=start, m_Clip=stream["m_Clip"], m_IndexArray=stream["m_IndexArray"]),
             "m_ClipBindingConstant": stream["m_ClipBindingConstant"]}
 
