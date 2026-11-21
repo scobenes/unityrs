@@ -29,22 +29,22 @@ PLATFORMS = {
 
 def wheel(folder: Path, platform: str, version="1.0.0", meta=None, abi="cp310-abi3", tags=None) -> Path:
     """A wheel named for `platform`, whose WHEEL file lists `tags` (by default the one its name gives)."""
-    path = folder / f"unityrs-{version}-{abi}-{platform}.whl"
+    path = folder / f"unityrs_py-{version}-{abi}-{platform}.whl"
     path.parent.mkdir(parents=True, exist_ok=True)
     tags = [f"{abi}-{platform}"] if tags is None else tags
     record = "Wheel-Version: 1.0\nGenerator: synthetic\nRoot-Is-Purelib: false\n" + "".join(f"Tag: {t}\n" for t in tags)
     with zipfile.ZipFile(path, "w") as z:
-        z.writestr(f"unityrs-{version}.dist-info/METADATA", f"Metadata-Version: 2.4\nName: unityrs\nVersion: {meta or version}\n")
-        z.writestr(f"unityrs-{version}.dist-info/WHEEL", record)
+        z.writestr(f"unityrs_py-{version}.dist-info/METADATA", f"Metadata-Version: 2.4\nName: unityrs-py\nVersion: {meta or version}\n")
+        z.writestr(f"unityrs_py-{version}.dist-info/WHEEL", record)
     return path
 
 
 def sdist(folder: Path, version="1.0.0", meta=None) -> Path:
-    path = folder / f"unityrs-{version}.tar.gz"
+    path = folder / f"unityrs_py-{version}.tar.gz"
     path.parent.mkdir(parents=True, exist_ok=True)
-    data = f"Metadata-Version: 2.4\nName: unityrs\nVersion: {meta or version}\n".encode()
+    data = f"Metadata-Version: 2.4\nName: unityrs-py\nVersion: {meta or version}\n".encode()
     with tarfile.open(path, "w:gz") as t:
-        info = tarfile.TarInfo(f"unityrs-{version}/PKG-INFO")
+        info = tarfile.TarInfo(f"unityrs_py-{version}/PKG-INFO")
         info.size = len(data)
         t.addfile(info, io.BytesIO(data))
     return path
@@ -65,7 +65,7 @@ class ReleaseDistsTest(unittest.TestCase):
                 self.assertEqual(R.main(args), 0)
                 self.assertEqual(len(list((tmp / "dist").iterdir())), 5)
                 self.assertEqual(R.main(args), 2)
-            self.assertIn("5 distributions of unityrs 1.0.0", out.getvalue())
+            self.assertIn("5 distributions of unityrs_py 1.0.0", out.getvalue())
             self.assertIn("DIST must not exist", err.getvalue())
 
     def test_each_wrong_set_is_named(self):
@@ -99,7 +99,7 @@ class ReleaseDistsTest(unittest.TestCase):
                                                     tags=["cp310-abi3-manylinux_2_28_x86_64", "cp310-abi3-win_amd64"])),
                     "its WHEEL file lists tags",
                 ),
-                "a stray file": (lambda r: (tmp / "a" / "sdist" / "notes.txt").write_text("x"), "neither a unityrs"),
+                "a stray file": (lambda r: (tmp / "a" / "sdist" / "notes.txt").write_text("x"), "neither a unityrs_py"),
             }
             for label, (change, message) in cases.items():
                 with self.subTest(label):
