@@ -135,9 +135,10 @@ def readers(clip=None):
 
 
 def claimed(record, ledger=None):
-    """Claims the intake whose record is `record`: its digest."""
+    """The claim marker of the intake whose record is `record`, as anim_twist_seal.claim writes it after `bind`
+    (these tests are of the views and completion, not the claim): its digest."""
     digest = round12.sha256(round12.canonical_json(record))
-    seal.claim(digest, record, ledger)
+    seal._create(seal._marker(digest, "claim", ledger), dict(intake_digest=digest, state="claimed", record=record))
     return digest
 
 
@@ -223,6 +224,8 @@ class IntakeTests(Runs, unittest.TestCase):
                 write_json(folder / name, value)
             return edit
         changed(edit_json("run.json", lambda v: v["run"].pop("variant")), "not a round 12 run")
+        changed(edit_json("run.json", lambda v: v["cases"].append(dict(name="body-twist-compact-t9", status="recorded"))),
+                "case.s. the builder tables do not")
         changed(edit_json("round.json", lambda v: v.update(run_id="e" * 32)), "does not declare this round 12 run")
         changed(edit_json("round.json", lambda v: v.update(editor_sources_sha256="0" * 64)), "does not declare")
         changed(edit_json("round.json", lambda v: v.update(tables_digest="0" * 64)), "does not declare")
@@ -442,6 +445,13 @@ class ViewTests(Runs, unittest.TestCase):
 
 
 class FixtureTests(unittest.TestCase):
+    def test_the_tables_initialise_in_any_order(self):
+        saved = dict(round12._TABLES)
+        self.addCleanup(lambda: (round12._TABLES.clear(), round12._TABLES.update(saved)))
+        round12._TABLES.clear()
+        round12.full_clip(TWIN)
+        self.assertEqual(round12.tables()[1], saved["sha256"])
+
     def test_every_clip_case_is_its_tables_variant_and_placement(self):
         found = {name: (variant, root) for name, _, _, variant, root in r12tables.full_clips()}
         cases = [row for row in rows().values() if row["family"] in ("twist-clip", "twin")]
@@ -542,10 +552,13 @@ class Round11CompletionTests(unittest.TestCase):
     def test_round_12s_sealed_evidence_opens_only_through_its_own_intakes_claim(self):
         folder = scratch.for_case(self) / "run"
         body = folder / "replays" / "body"
-        names = ("body-probes-face", "body-probes-fingers", sorted(round12.round11_cases())[0],
-                 allowlisted("tall"), "body-clip-tall-scoped-level-offset")
+        reused = sorted(round12.round11_cases())
+        names = (*reused, "body-clip-tall-scoped-level-offset")
         for name in names:
             write_json(body / f"{name}.pending.json", dict(case=name))
+        for case in reused:
+            (folder / "bundles").mkdir(exist_ok=True)
+            (folder / "bundles" / r11.ROUND11_CASES[case].bundle).write_bytes(case.encode())
         write_json(folder / "run.json", dict(run=dict(run_id="c" * 32, editor_version=VERSIONS["2022"])))
         seen = []
 
@@ -557,32 +570,44 @@ class Round11CompletionTests(unittest.TestCase):
             seen.append((Path(folder_), {p.name: p.read_bytes() for p in paths}))
             return len(paths), [], []
 
-        def bound(run_id, *files):
+        def bound(run_id, leave=()):
+            files = ["run.json", *(f"replays/body/{case}.pending.json" for case in reused),
+                     *{f"bundles/{r11.ROUND11_CASES[case].bundle}" for case in reused}]
             return dict(round11={"2022": dict(run_id=run_id, files={name: hashlib.sha256(
-                (folder / name).read_bytes()).hexdigest() for name in ("run.json", *files)})})
+                (folder / name).read_bytes()).hexdigest() for name in files if name not in leave})})
         face = "replays/body/body-probes-face.pending.json"
         ledger = scratch.for_case(self) / "ledger"
         with mock.patch.object(r11, "check_inventory"), mock.patch.object(complete, "complete_folder", complete_folder), \
                 mock.patch.object(complete, "recorded_paths", recorded_paths), mock.patch.object(seal, "LEDGER_DIR", ledger):
             count, _, _, held = r11.complete_round(folder, "unityrs", None, replay)
             sealed = {n for n, p in round12.round11_cases().items() if p == "confirmation"}
-            self.assertEqual(held, sorted(n for n in names if n in sealed))
+            self.assertEqual(held, sorted(sealed))
             self.assertEqual(count, len(names) - len(held))
             self.assertFalse({name.removesuffix(".pending.json") for name in seen[-1][1]} & sealed)
             self.assertIs(complete.recorded_paths, recorded_paths)
-            record = bound("c" * 32, face)
+            record = bound("c" * 32)
             digest = round12.sha256(round12.canonical_json(record))
             with self.assertRaisesRegex(ValueError, "opens only after the intake's claim"):
                 r11.complete_round(folder, "unityrs", None, replay, digest)
             # Another intake's claim, binding another run, opens nothing here.
-            other = claimed(bound("e" * 32, face), ledger)
             with self.assertRaisesRegex(ValueError, "does not bind round 11 run"):
-                r11.complete_round(folder, "unityrs", None, replay, other)
+                r11.complete_round(folder, "unityrs", None, replay, claimed(bound("e" * 32), ledger))
+            # A claim that leaves out one sealed capture or bundle opens nothing either.
+            for leave in (face, f"bundles/{r11.ROUND11_CASES['body-probes-face'].bundle}"):
+                with self.subTest(leave=leave), self.assertRaisesRegex(ValueError, "does not list"):
+                    r11.complete_round(folder, "unityrs", None, replay, claimed(bound("c" * 32, (leave,)), ledger))
             claimed(record, ledger)
+            with self.assertRaisesRegex(ValueError, "--inspect-dir"):
+                r11.complete_round(folder, "unityrs", folder, replay, digest)
             (folder / face).write_bytes(b"changed after the intake")
             with self.assertRaisesRegex(ValueError, "differ from the claimed intake's"):
                 r11.complete_round(folder, "unityrs", None, replay, digest)
             write_json(folder / face, dict(case="body-probes-face"))
+            # A symlink anywhere in the run, a folder's included, refuses the copy.
+            (folder / "elsewhere").symlink_to(scratch.for_case(self), target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "holds a symlink"):
+                r11.complete_round(folder, "unityrs", None, replay, digest)
+            (folder / "elsewhere").unlink()
             self.assertEqual(r11.complete_round(folder, "unityrs", None, replay, digest)[3], [])
             private, read = seen[-1]
             self.assertNotEqual(private, folder)

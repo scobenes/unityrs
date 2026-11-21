@@ -489,6 +489,8 @@ def complete_round(folder, unityrs, inspect_dir, replay, intake_digest=None):
     if intake_digest is None:
         held = {case for case, partition in round11_cases().items() if partition != "exploration"}
         return _complete_held(folder, unityrs, inspect_dir, replay, held)
+    replay.require(inspect_dir is None, "round 12's sealed evidence decodes only from the claimed bytes: "
+                                        "--inspect-dir reads JSON outside them")
     import scratch
 
     with scratch.folder("unityrs-round11-") as private:
@@ -498,13 +500,15 @@ def complete_round(folder, unityrs, inspect_dir, replay, intake_digest=None):
 
 def _claimed_copy(folder, intake_digest, private):
     """A private copy of round 11 run `folder` under `private`, refused unless the claim of `intake_digest` holds a
-    record (anim_twist_seal.claimed_record) binding this run, by its run id, and every file that record bound is
-    byte for byte the copy's."""
+    record (anim_twist_seal.claimed_record) binding this run, by its run id, listing every reused case's capture and
+    bundle (anim_fixture_round12.round11_cases: all completion opens of round 12's evidence), and every file that
+    record bound is byte for byte the copy's. The run holds no symlink, to a file or a folder."""
     import hashlib
+    import os
     import shutil
 
     import anim_replay as replay
-    from anim_fixture_round12 import editor_of_run
+    from anim_fixture_round12 import editor_of_run, round11_cases
     from anim_twist_seal import claimed_record
 
     bound = claimed_record(intake_digest)["round11"]
@@ -512,6 +516,14 @@ def _claimed_copy(folder, intake_digest, private):
     runs = [row for row in bound.values() if row.get("run_id") == run_id]
     replay.require(len(runs) == 1, f"the claim of intake {intake_digest[:12]} does not bind round 11 run "
                                    f"{Path(folder).name}")
+    listed = runs[0]["files"]
+    unlisted = sorted(name for case in round11_cases() for name in (
+        f"replays/body/{case}.pending.json", f"bundles/{ROUND11_CASES[case].bundle}") if name not in listed)
+    replay.require(not unlisted, f"the claim does not list round 12's sealed evidence: {unlisted[:3]}")
+    links = [Path(folder)] if Path(folder).is_symlink() else []
+    for top, dirs, files in os.walk(folder, followlinks=False):
+        links += [Path(top) / name for name in dirs + files if (Path(top) / name).is_symlink()]
+    replay.require(not links, f"{Path(folder).name} holds a symlink: {links[0].name if links else ''}")
     copy = Path(shutil.copytree(folder, Path(private) / Path(folder).name, symlinks=True))
     changed = sorted(name for name, digest in runs[0]["files"].items()
                      if not (copy / name).is_file() or (copy / name).is_symlink()

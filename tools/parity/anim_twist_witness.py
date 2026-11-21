@@ -377,9 +377,11 @@ def _row(found):
 def run(folder, unityrs, log=print):
     from anim_replay_complete import read_manifest
 
-    run_file(folder, "run.json")
-    _, identity = read_manifest(folder, replay)
-    views = {}
+    import anim_fixture_round12 as round12
+
+    # run.json too through round 12's allowlist: its hashed bytes, from the view's private copy.
+    views = {"allowlist": round12.round11_view(folder)}
+    _, identity = read_manifest(views["allowlist"].private(), replay)
     rigs = {}
     for rig in SCOPED_RIGS:
         rigs[rig] = load_rig(folder, rig, unityrs, views, identity)

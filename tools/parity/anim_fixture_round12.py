@@ -81,7 +81,7 @@ def canonical_json(value):
 
 def tables():
     """(the tables' document, the sha256 of its canonical bytes, which the builder pins), computed once."""
-    if not _TABLES:
+    if "doc" not in _TABLES:
         import anim_round12_tables as r12
 
         doc = r12.document()
@@ -320,6 +320,8 @@ def check_run_files(view):
     doc, tables_sha256 = tables()
     run, statuses = manifest_of(view)
     replay.require(run.get("variant") == "round12", f"{view.folder.name} is not a round 12 run")
+    unknown = sorted(set(statuses) - set(partitions()))
+    replay.require(not unknown, f"{view.folder.name}: run.json lists case(s) the builder tables do not: {unknown[:5]}")
     declared = replay.read_json(view.run_file("round.json").decode("utf-8"))
     replay.require(declared == {"format": "unityrs.fixture_round", "round": ROUND, "run_id": run.get("run_id"),
                                 "tables_sha256": tables_sha256, "tables_digest": doc["tables_digest"],
