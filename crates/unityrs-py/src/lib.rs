@@ -21,6 +21,7 @@ mod direct_classes;
 mod direct_keys;
 mod direct_list;
 mod direct_object;
+mod direct_ready;
 mod environment;
 mod errors;
 mod exports;
