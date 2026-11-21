@@ -2,6 +2,7 @@
 feasible, one out of bound on any bone is not, feasible candidates apart in key leave a cell unresolved, and the
 rows, settings and shards it reads are refused when they are not exactly the tables' and the run's."""
 
+import itertools
 import math
 import re
 import struct
@@ -15,6 +16,7 @@ import anim_twist_bound as bound  # noqa: E402
 import anim_twist_fit as fit  # noqa: E402
 import anim_twist_model as model  # noqa: E402
 import anim_twist_tables as tables  # noqa: E402
+import scratch  # noqa: E402
 from test_anim_twist_witness import rig_entry  # noqa: E402
 
 LIMBS = (model.Limb(1, 1, 2, "+", 0), model.Limb(1, 2, 2, "+", 0), model.Limb(1, 3, 2, "+", 0))
@@ -22,6 +24,9 @@ FEET = (model.Foot(1, 0), model.Foot(2, 1))
 CASE = "body-twist-compact-t5"
 RUN = dict(run_id="r", editor="2022.3.62f3")
 INTERPRETER = dict(implementation="CPython", python="3.11.18", image="sha256:" + "4d" * 32)
+# Exploration rows the witness search sees, as anim_twist_witness.rows gives them.
+PLAN = [("body-twist-compact-t0", 1, "compact", "t0", {m: .5 for m in model.LIMB_TWISTS}, "exploration all-equal core"),
+        ("body-twist-compact-t0", 2, "compact", "t0", {41: -1., 39: .5, 23: .5, 27: .5}, "exploration all-equal core")]
 
 
 def bits(value):
@@ -65,7 +70,7 @@ class FitTests(unittest.TestCase):
     def shard(self, cases, k, n, interpreter=None):
         found = fit.fit_rows(cases, (k, n), log=lambda *_: None)
         return dict(format=fit.FORMAT, run=RUN, tables="t", interpreter=interpreter or INTERPRETER,
-                    candidates_count=len(model.candidates()), rigs={}, **found)
+                    candidates_count=len(model.candidates()), rigs={"compact": fit.rig_summary(self.rig)}, **found)
 
     def test_the_recording_candidate_is_feasible(self):
         cases = cases_of(self.rig, self.settings, LIMBS[0], FEET[0])
@@ -89,39 +94,66 @@ class FitTests(unittest.TestCase):
         self.assertAlmostEqual(turn, 2 * math.atan(.0005), delta=1e-6)
 
     def test_feasible_candidates_apart_in_key_leave_the_cell_unresolved(self):
-        rigs = {"compact": self.rig}
         with mock.patch.object(fit.witness, "ADMISSION", (("t0", ("compact",)), ("t25", ("compact",)))):
-            found = {c["tuple"]: c for c in fit.cells([0, 2], rigs)}
+            found = {c["tuple"]: c for c in fit.cells([0, 2], fit.cell_classes({"compact": (self.rig, fit.ROUND12)}))}
         # D1's S1 and S2 are one equation at w = 0 and two at w = .25.
         self.assertEqual((found["t0"]["equations"], found["t0"]["unresolved"]), (1, False))
         self.assertEqual((found["t25"]["equations"], found["t25"]["unresolved"]), (2, True))
         self.assertEqual(found["t25"]["members"], [[0], [2]])
+        self.assertEqual(found["t0"]["keys_from"], fit.ROUND12)
 
-    def witnessed(self, unwitnessed=()):
-        return dict(format=fit.FORMAT + ".witness", run=RUN, round11_run_id="q", interpreter=INTERPRETER, cells=[],
-                    unwitnessed_cells=list(unwitnessed))
+    def witnessed(self):
+        with mock.patch.object(fit.witness, "rows", lambda: PLAN):
+            found = fit.witnesses({"compact": self.rig}, {"compact": rig_entry(12)}, log=lambda *_: None)
+        return dict(format=fit.FORMAT + ".witness", run=RUN, round11_run_id="q", interpreter=INTERPRETER, **found)
+
+    def combine(self, shards, witnessed, round11=None, running=INTERPRETER):
+        round11 = round11 or dict(editor_version="2022.3.62f3", run_id="q")
+        with mock.patch.object(fit.witness, "rows", lambda: PLAN):
+            return fit.combine(shards, {"compact": self.rig}, {"compact": rig_entry(12)}, round11, witnessed, running)
 
     def test_combine_reports_one_editor(self):
         cases = cases_of(self.rig, self.settings, LIMBS[0], FEET[0])
         shards = [self.shard(cases, 0, 1)]
-        round11 = dict(editor_version="2022.3.62f3", run_id="q")
         with mock.patch.object(fit.witness, "ADMISSION", (("t0", ("compact",)),)):
-            result = fit.combine(shards, {"compact": self.rig}, round11, self.witnessed())
+            witnessed = self.witnessed()
+            result = self.combine(shards, witnessed)
             self.assertIn(0, [c["index"] for c in result["feasible_candidates"]])
             slack = result["feasible_candidates"][0]["slack"]
             self.assertEqual(set(slack) - {"degrees", "case", "sample", "side", "bone"},
                              {"bound_degrees", "separation_degrees", "separation_error_degrees"})
             self.assertEqual((result["interpreter"], result["selection_opens"]), (INTERPRETER, False))
-            # A pair no exploration row witnesses opens selection, however the fit resolves.
-            opened = fit.combine(shards, {"compact": self.rig}, round11, self.witnessed(["t0/compact"]))
-            self.assertEqual((opened["selection_opens"], opened["resolved"]), (True, False))
+            self.assertEqual(result["witness_pairs"], witnessed["pairs"])
             with self.assertRaisesRegex(ValueError, "not 2022"):
-                fit.combine(shards, {"compact": self.rig}, dict(round11, editor_version="6000.6.9f1"),
-                            self.witnessed())
+                self.combine(shards, witnessed, dict(editor_version="6000.6.9f1", run_id="q"))
+            with self.assertRaisesRegex(ValueError, "combine runs under"):
+                self.combine(shards, witnessed, running=dict(INTERPRETER, python="3.15.2"))
             for change in (dict(run=dict(RUN, run_id="other")), dict(round11_run_id="z"),
                            dict(interpreter=dict(INTERPRETER, python="3.15.2"))):
                 with self.subTest(change=change), self.assertRaisesRegex(ValueError, "witness result"):
-                    fit.combine(shards, {"compact": self.rig}, round11, self.witnessed() | change)
+                    self.combine(shards, witnessed | change)
+
+    def test_combine_checks_every_witness_and_recomputes_the_open_cells(self):
+        cases = cases_of(self.rig, self.settings, LIMBS[0], FEET[0])
+        shards = [self.shard(cases, 0, 1)]
+        with mock.patch.object(fit.witness, "ADMISSION", (("t0", ("compact",)),)):
+            witnessed = self.witnessed()
+            pairs = witnessed["pairs"]
+            named = next(k for k, pair in enumerate(pairs) if pair[3] >= 0 and pair[2])
+
+            def changed(k, column, value):
+                return dict(witnessed, pairs=[pair if j != k else pair[:column] + [value] + pair[column + 1:]
+                                              for j, pair in enumerate(pairs)])
+            for tampered, pattern in ((dict(witnessed, pairs=pairs[1:]), "every joint pair"),
+                                      (changed(named, 5, pairs[named][5] + 1e-9), "not the recorded"),
+                                      (changed(named, 2, pairs[named][2] ^ 1), "other cells"),
+                                      (changed(named, 3, len(witnessed["rows"])), "no row")):
+                with self.subTest(pattern=pattern), self.assertRaisesRegex(ValueError, pattern):
+                    self.combine(shards, tampered)
+            # A pair whose witness is dropped opens its cells, whatever list the result supplies.
+            opened = self.combine(shards, dict(changed(named, 3, -1), unwitnessed_cells=[]))
+            self.assertEqual(opened["unwitnessed_cells"], ["t0/compact"])
+            self.assertEqual((opened["selection_opens"], opened["resolved"]), (True, False))
 
     def test_shards_must_cover_one_run_once(self):
         cases = cases_of(self.rig, self.settings, LIMBS[0], FEET[0])
@@ -151,13 +183,8 @@ class WitnessTests(unittest.TestCase):
         self.addCleanup(patch.stop)
 
     def test_only_exploration_rows_name_witnesses(self):
-        twist = {m: .5 for m in model.LIMB_TWISTS}
-        plan = [("body-twist-compact-t0", 1, "compact", "t0", twist, "exploration all-equal core"),
-                ("body-twist-tall-t0", 1, "tall", "t0", twist, "selection"),
-                ("body-twist-compact-t0", 2, "compact", "t0", {41: -1., 39: .5, 23: .5, 27: .5},
-                 "exploration all-equal core")]
-        rigs12 = {"compact": rig_entry(11)}
-        rigs11 = {"compact": rig_entry(12)}
+        plan = PLAN[:1] + [("body-twist-tall-t0", 1, "tall", "t0", PLAN[0][4], "selection")] + PLAN[1:]
+        rigs12, rigs11 = {"compact": rig_entry(11)}, {"compact": rig_entry(12)}
         seen = []
         search = fit.witness.search
 
@@ -167,12 +194,27 @@ class WitnessTests(unittest.TestCase):
         with mock.patch.object(fit.witness, "rows", lambda: plan), mock.patch.object(fit.witness, "search", spy), \
                 mock.patch.object(fit.witness, "ADMISSION", (("t0", ("compact",)), ("t25", ("compact",)))):
             found = fit.witnesses(rigs12, rigs11, log=lambda *_: None)
-        self.assertEqual(seen, [plan[0], plan[2]])
-        self.assertEqual(found["witnessed"] + found["open"], found["pairs"])
-        self.assertGreater(found["open"], 0)
-        self.assertEqual(found["unwitnessed_cells"], ["t25/compact"])
-        self.assertEqual(found["smallest_margin"]["case"], "body-twist-compact-t0")
-        self.assertGreater(found["smallest_margin"]["margin_degrees"], 0)
+            classes = fit.cell_classes(fit.keyed_rigs(rigs12, rigs11))
+            checked = fit.check_witnesses(found, classes, rigs12)
+        self.assertEqual(seen, PLAN)
+        n = len(model.candidates())
+        self.assertEqual([pair[:2] for pair in found["pairs"]], [list(p) for p in itertools.combinations(range(n), 2)])
+        self.assertEqual(checked["witnessed"] + checked["open"], n * (n - 1) // 2)
+        self.assertGreater(checked["open"], 0)
+        self.assertEqual(checked["unwitnessed_cells"], ["t25/compact"])
+        self.assertEqual(checked["smallest_margin"]["case"], "body-twist-compact-t0")
+        self.assertGreater(checked["smallest_margin"]["degrees"], 0)
+        self.assertEqual(found["cells"], [["t0", "compact", fit.ROUND12], ["t25", "compact", fit.ROUND12]])
+
+    def test_keys_come_from_round_12_where_exploration_builds_the_rig(self):
+        rigs12 = {"compact": rig_entry(11)}
+        rigs11 = {"compact": rig_entry(12), "tall": rig_entry(13)}
+        with mock.patch.object(fit.witness, "ADMISSION", (("t0", ("compact", "tall")),)):
+            keyed = fit.keyed_rigs(rigs12, rigs11)
+        self.assertEqual(keyed, {"compact": (rigs12["compact"], fit.ROUND12), "tall": (rigs11["tall"], fit.ROUND11)})
+        differs = fit.rig_summary(rigs12["compact"]) != fit.rig_summary(rigs11["compact"])
+        self.assertEqual(fit.key_differences(rigs12, rigs11), ["compact"] if differs else [])
+        self.assertEqual(fit.key_differences(rigs12, {"compact": rig_entry(11)}), [])
 
     def test_every_case_of_a_rig_is_one_avatar(self):
         rig, other = rig_entry(11), rig_entry(12)
@@ -181,6 +223,13 @@ class WitnessTests(unittest.TestCase):
         cases["body-twist-compact-t1"] = (other, None, [])
         with self.assertRaisesRegex(ValueError, "differs from its rig"):
             fit.exploration_rigs(cases)
+
+    def test_outputs_round_trip_compressed(self):
+        root = scratch.for_case(self)
+        for name in ("out.json", "out.json.gz"):
+            fit.write(root / name, dict(a=[1, 2.5, None]))
+            self.assertEqual(fit.read(root / name), dict(a=[1, 2.5, None]))
+        self.assertEqual((root / "out.json.gz").read_bytes()[:2], b"\x1f\x8b")
 
 
 class RowTests(unittest.TestCase):
