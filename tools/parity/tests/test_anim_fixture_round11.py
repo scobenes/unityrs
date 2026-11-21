@@ -371,7 +371,17 @@ class MuscleSweepTests(unittest.TestCase):
         # twists the shoulders past the freeze's limit, fails in the Editor, before it is marked recorded.
         recording = source("UnityrsBodyRecording.cs")
         limit = json.loads(FREEZE.read_text(encoding="utf-8"))["bounds"]["twist_limit"]
-        self.assertIn(f"const double LeastTurn = {r11.LEAST_TURN}, TwistLimit = {limit!r};", recording)
+        lateral = json.loads(FREEZE.read_text(encoding="utf-8"))["scope"]["lateral_limit"]
+        self.assertIn(f"const double LeastTurn = {r11.LEAST_TURN}, TwistLimit = {limit!r}, LateralLimit = {lateral!r};",
+                      recording)
+        self.assertEqual(tuple(re.findall(r'"([\w -]+)"', re.search(r"LateralMuscles = \{(.*?)\};", recording).group(1))),
+                         scope.LATERAL_MUSCLES)
+        self.assertIn("var played = Values(body.Samples[k].readback_muscles);", recording)
+        # An in-scope clip's curves are authored with both tangents in Unity's Linear mode.
+        self.assertIn("scoped ? LinearCurve(BodyTimes, FullValues(muscle, true))", clips_source := source("UnityrsBodyClips.cs"))
+        for side in ("Left", "Right"):
+            self.assertIn(f"AnimationUtility.SetKey{side}TangentMode(curve, i, AnimationUtility.TangentMode.Linear);",
+                          clips_source)
         self.assertEqual(tuple(re.findall(r'"(\w+)"', re.search(r"FrameBones = \{(.*?)\};", recording).group(1))),
                          scope.FRAME_BONES)
         self.assertIn('if (fixture.Body.Variant == "muscle")', recording)

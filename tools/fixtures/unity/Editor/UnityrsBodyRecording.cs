@@ -169,9 +169,14 @@ public static partial class AnimReplayRecorder
     //   that muscle's bone, locally, LeastTurn degrees or more from the recorded
     //   zero-vector sample;
     // - an in-scope clip's every sample keeps the shoulder-hip twist, about the
-    //   up from the upper legs to the upper arms, within freeze v8's twist limit.
-    const double LeastTurn = 0.25, TwistLimit = 0.07417649320975901;
+    //   up from the upper legs to the upper arms, within freeze v8's twist limit,
+    //   and each spine Left-Right value Unity played (GetHumanPose's read-back
+    //   of the sample) within its lateral limit. Completion checks the compiled
+    //   curve's value at each sample time; the Editor cannot read the compiled
+    //   track, so it checks what that track played.
+    const double LeastTurn = 0.25, TwistLimit = 0.07417649320975901, LateralLimit = 0.193359375;
     static readonly string[] FrameBones = { "LeftUpperArm", "RightUpperArm", "LeftUpperLeg", "RightUpperLeg" };
+    static readonly string[] LateralMuscles = { "Spine Left-Right", "Chest Left-Right", "UpperChest Left-Right" };
 
     static void CheckBodyResponse(HumanCapture capture, UnityrsFixtureBuilder.ReplayCase fixture, BodyHooks body)
     {
@@ -201,8 +206,16 @@ public static partial class AnimReplayRecorder
         if (fixture.Body.Kind == "clip" && fixture.Body.Spec.Scoped)
         {
             Need(FrameBones.All(bone => nodes.TryGetValue(bone, out int node) && node >= 0), name + " lacks a frame bone.");
+            var lateral = LateralMuscles.Select(muscle => Array.FindIndex(capture.humanoid.muscles, row => row.name == muscle)).ToArray();
+            Need(lateral.All(index => index >= 0), name + " lacks a spine Left-Right muscle.");
             for (int k = 0; k < body.Samples.Count; k++)
             {
+                var played = Values(body.Samples[k].readback_muscles);
+                foreach (int index in lateral)
+                    Need(index < played.Length && Math.Abs(played[index]) <= LateralLimit, name + " is in scope but "
+                        + capture.humanoid.muscles[index].name + " played " + (index < played.Length
+                        ? played[index].ToString("R", CultureInfo.InvariantCulture) : "nothing") + " at sample " + k
+                        + ", over the lateral limit " + LateralLimit.ToString("R", CultureInfo.InvariantCulture) + ".");
                 var points = FrameBones.Select(bone => Values(body.Samples[k].nodes[nodes[bone]].position)).ToArray();
                 double twist = ShoulderHipTwist(points);
                 Need(twist <= TwistLimit, name + " is in scope but its shoulder-hip twist at sample " + k + " is "

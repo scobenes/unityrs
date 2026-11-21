@@ -318,7 +318,8 @@ class CompiledScopeTests(unittest.TestCase):
 
     def test_a_malformed_lateral_slot_refuses(self):
         # A muscle the clip does not curve (m_IndexArray -1, no binding) plays 0; any other unreadable slot is an
-        # error, a -1 beside the attribute's compiled binding (orphaned, which clip.rs refuses) too.
+        # error: a binding whose entry is not its slot (orphaned at -1, another slot, a malformed or missing
+        # entry), which clip.rs refuses as a conflicting mapping, or an entry naming a slot with no binding.
         name = "body-clip-large-scoped-orientation-offset"
         attribute = body.MUSCLE_ATTRIBUTE + 4  # Chest Left-Right
         with round11_docs():
@@ -326,18 +327,52 @@ class CompiledScopeTests(unittest.TestCase):
             authored = body._authored(doc["spec"]["evidence"]["editor"], replay)
             index = clip["m_MuscleClip"]["m_IndexArray"]
             other = next(slot for k, slot in enumerate(index) if slot >= 0 and k != attribute)
-            for edit, pattern in ((lambda index: index.__setitem__(attribute, -1), "orphaned binding"),
-                                  (lambda index: index.__setitem__(attribute, other), "is malformed"),
-                                  (lambda index: index.__setitem__(attribute, len(index) + 999), "is malformed"),
-                                  (lambda index: index.__setitem__(attribute, "1"), "no entry"),
-                                  (lambda index: index.__delitem__(slice(attribute, None)), "no entry")):
+            for edit in (lambda index: index.__setitem__(attribute, -1),
+                         lambda index: index.__setitem__(attribute, other),
+                         lambda index: index.__setitem__(attribute, len(index) + 999),
+                         lambda index: index.__setitem__(attribute, "1"),
+                         lambda index: index.__delitem__(slice(attribute, None))):
                 broken = copy.deepcopy(clip)
                 edit(broken["m_MuscleClip"]["m_IndexArray"])
-                with self.subTest(pattern=pattern), self.assertRaisesRegex(ValueError, pattern):
+                with self.subTest(edit=edit), self.assertRaisesRegex(ValueError, "orphaned or conflicting binding"):
                     scope.check_scope(name, "in", doc, authored, broken, replay)
             del clip["m_MuscleClip"]["m_IndexArray"]
-            with self.assertRaisesRegex(ValueError, "no entry"):
+            with self.assertRaisesRegex(ValueError, "orphaned or conflicting binding"):
                 scope.check_scope(name, "in", doc, authored, clip, replay)
+        # An uncurved lateral muscle's entry naming a slot that is another binding's: malformed.
+        name = "body-clip-no-upper-chest-scoped-orientation-offset"
+        attribute = body.MUSCLE_ATTRIBUTE + 7  # UpperChest Left-Right, expected absent there
+        with round11_docs():
+            doc, clip, _ = doc_of(name)
+            authored = body._authored(doc["spec"]["evidence"]["editor"], replay)
+            index = clip["m_MuscleClip"]["m_IndexArray"]
+            self.assertEqual(index[attribute], -1)
+            scope.check_scope(name, "in", doc, authored, clip, replay)
+            index[attribute] = next(slot for slot in index if slot >= 0)
+            with self.assertRaisesRegex(ValueError, "is malformed"):
+                scope.check_scope(name, "in", doc, authored, clip, replay)
+
+    def test_an_orphaned_binding_on_any_attribute_refuses(self):
+        # The tall rig omits UpperChest, so no full curve covers attribute 48 (UpperChest Front-Back): a compiled
+        # binding there with m_IndexArray -1 is still the conflicting mapping the runtime refuses.
+        name = "body-clip-tall-scoped-orientation-offset"
+        attribute = body.MUSCLE_ATTRIBUTE + 6
+        self.assertEqual(attribute, 48)
+        self.assertIn('if (type == 95 && Field("customType") == 8) yield return (attribute, slot);',
+                      source("UnityrsBodyClips.cs"))
+        with round11_docs():
+            doc, clip, _ = doc_of(name)
+            authored = body._authored(doc["spec"]["evidence"]["editor"], replay)
+            self.assertEqual(clip["m_MuscleClip"]["m_IndexArray"][attribute], -1)
+            scope.check_scope(name, "in", doc, authored, clip, replay)
+            bindings = clip["m_ClipBindingConstant"]["genericBindings"]
+            row = next(row for row in bindings if row.get("typeID", row.get("classID")) == 95)
+            bindings.append(dict(row, attribute=attribute))
+            with self.assertRaisesRegex(ValueError, "attribute 48 .* m_IndexArray entry is -1"):
+                scope.check_scope(name, "in", doc, authored, clip, replay)
+            # Refusal evidence is held to it too.
+            with self.assertRaisesRegex(ValueError, "orphaned or conflicting binding"):
+                scope.check_scope(name, "refusal", doc, authored, clip, replay)
 
 
 class B4InputTests(unittest.TestCase):

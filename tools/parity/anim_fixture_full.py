@@ -12,8 +12,8 @@ Each clip declares its scope against freeze v8's (anim_fixture_scope):
   FULL_VARIANTS at both placements; the armature plays the chain variant at the identity.
 - **In scope** (SCOPED_RIGS), B5b's passing evidence over B4's whole admitted matrix: every muscle on a curve,
   the Spine's three too, with the frozen-limited ones held inside the limits by amplitude (SCOPED_AMPLITUDES):
-  the spine Left-Right muscles within 3/16 of the lateral limit 0.193359375 at every key (polylines, so between
-  keys too), and the spine twist and shoulder Front-Back muscles, which turn the shoulders about the body's up,
+  the spine Left-Right muscles at 1/8 at most against the lateral limit 0.193359375 at every key (polylines, their
+  tangents in Unity's Linear mode, so between keys too), and the spine twist and shoulder Front-Back muscles, which turn the shoulders about the body's up,
   small. Completion checks both on what Unity built and recorded (anim_fixture_scope): the compiled lateral
   values at every sample time, and the shoulder-hip twist of every recorded pose against 4.25 degrees. The
   plain chain plays every variant B4 admits at both placements on the compact, large, small and tall rigs and
@@ -72,7 +72,7 @@ SCOPED_RIGS = {"compact-scoped": ("compact", "", 1, SCOPED_ADMITTED),
     f"{base}-{face}-scoped": (base, "", 1, FACE_VARIANTS) for base in ("compact", "tall") for face in FACES} | {
     topology + "-scoped": (topology, "", 1, SCOPED_ADMITTED) for topology in SCOPED_TOPOLOGIES}
 # An in-scope clip's amplitudes: (muscle names, amplitude); every other muscle's is 1/2.
-SCOPED_AMPLITUDES = ((("Spine Left-Right", "Chest Left-Right", "UpperChest Left-Right"), 3 / 16),
+SCOPED_AMPLITUDES = ((("Spine Left-Right", "Chest Left-Right", "UpperChest Left-Right"), 1 / 8),
                      (("Spine Twist Left-Right", "Chest Twist Left-Right", "UpperChest Twist Left-Right"), 1 / 32),
                      (("Left Shoulder Front-Back", "Right Shoulder Front-Back"), 1 / 8))
 # An in-scope clip's own keys for a muscle, in place of amplitude * unit: the Spine Front-Back crosses zero

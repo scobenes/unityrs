@@ -23,6 +23,7 @@ from pathlib import Path
 from anim_body_model import LATERAL_MUSCLES, Refused, shoulder_hip_twist
 from anim_fixture_body import MUSCLE_ATTRIBUTE, _runtime_slots
 from anim_body_tolerance import FRAME_BONES
+from anim_fixture_contract import TRANSFORM_CURVES
 from anim_reference import multiply
 
 FREEZE = json.loads((Path(__file__).resolve().parent / "anim_body_freeze_v8.json").read_text(encoding="utf-8"))
@@ -102,10 +103,31 @@ def compiled_lateral(doc, clip, replay):
     return rows
 
 
+def check_human_mapping(name, clip, replay):
+    """Every compiled humanoid binding (Animator class 95, custom type 8, any path) is the slot its attribute's
+    `m_IndexArray` entry names, the bindings before it counted at their widths (anim_fixture_contract
+    .compiled_curves'): an orphaned binding (an entry of -1, or none) or a second binding for an attribute is a
+    conflicting mapping the runtime refuses (clip.rs, ConflictingHumanMapping), on any attribute."""
+    bindings = clip.get("m_ClipBindingConstant", {}).get("genericBindings", [])
+    index = clip.get("m_MuscleClip", {}).get("m_IndexArray")
+    widths = {attribute: len(axes) for _, attribute, axes in TRANSFORM_CURVES.values()}
+    slot = 0
+    for row in bindings:
+        class_id, attribute = row.get("typeID", row.get("classID")), row.get("attribute")
+        if class_id == 95 and row.get("customType") == 8:
+            entry = index[attribute] if isinstance(index, list) and type(attribute) is int \
+                and 0 <= attribute < len(index) else None
+            replay.require(entry == slot, f"{name}: the built clip binds Animator attribute {attribute} at slot {slot} "
+                                          f"but its m_IndexArray entry is {entry} (an orphaned or conflicting binding)")
+        slot += widths.get(attribute, 1) if class_id == 4 else 1
+
+
 def check_scope(name, declared, doc, authored, clip, replay):
     """A clip's declared scope against the frozen limits; refuses a clip whose curves, compiled values or
-    recorded poses disagree with its declaration."""
+    recorded poses disagree with its declaration, or whose compiled humanoid bindings the runtime refuses
+    (`check_human_mapping`)."""
     replay.require(declared in SCOPES, f"{name} declares no scope")
+    check_human_mapping(name, clip, replay)
     lateral = max(abs(v) for v in lateral_keys(authored, replay))
     compiled = compiled_lateral(doc, clip, replay)
     if declared == "refusal":

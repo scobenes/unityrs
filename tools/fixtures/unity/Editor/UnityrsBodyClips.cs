@@ -159,12 +159,12 @@ static partial class UnityrsFixtureBuilder
     // are equal and a swapped channel changes the pose.
     static readonly int[] Moduli = { 17, 13, 11, 13, 17 };
     static float CurveUnit(int muscle, int key) => ((muscle * 7 + 3 + key * 5) % Moduli[key] - (Moduli[key] - 1) / 2) / 8f;
-    // An in-scope clip's frozen-limited muscles: the spine Left-Right ones within
-    // the lateral limit 0.193359375, and the spine twist and shoulder Front-Back
+    // An in-scope clip's frozen-limited muscles: the spine Left-Right ones at 1/8
+    // at most, well within the lateral limit 0.193359375, and the spine twist and shoulder Front-Back
     // ones, which turn the shoulders about the body's up, well inside the
     // 4.25 degree shoulder-hip twist limit. Every other muscle's amplitude is 1/2.
     static readonly (string[] muscles, float amplitude)[] ScopedAmplitudes = {
-        (new[] { "Spine Left-Right", "Chest Left-Right", "UpperChest Left-Right" }, 3 / 16f),
+        (new[] { "Spine Left-Right", "Chest Left-Right", "UpperChest Left-Right" }, 1 / 8f),
         (new[] { "Spine Twist Left-Right", "Chest Twist Left-Right", "UpperChest Twist Left-Right" }, 1 / 32f),
         (new[] { "Left Shoulder Front-Back", "Right Shoulder Front-Back" }, 1 / 8f),
     };
@@ -260,6 +260,21 @@ static partial class UnityrsFixtureBuilder
         return new AnimationCurve(keys);
     }
 
+    // An in-scope clip's curves: PolyLine's keys with both tangents in Unity's
+    // Linear mode, so the clip stays a polyline between keys as Unity builds it,
+    // never a smooth curve overshooting the frozen lateral limit (completion
+    // checks the compiled value at every sample, the Editor the played one).
+    static AnimationCurve LinearCurve(float[] times, float[] values)
+    {
+        var curve = PolyLine(times, values);
+        for (int i = 0; i < curve.length; i++)
+        {
+            AnimationUtility.SetKeyLeftTangentMode(curve, i, AnimationUtility.TangentMode.Linear);
+            AnimationUtility.SetKeyRightTangentMode(curve, i, AnimationUtility.TangentMode.Linear);
+        }
+        return curve;
+    }
+
     static void SetVectorCurves(AnimationClip clip, string prefix, float[] times, Vector3[] values)
     {
         const string axes = "xyz";
@@ -289,7 +304,8 @@ static partial class UnityrsFixtureBuilder
         var names = HumanTrait.MuscleName;
         if (full)
             foreach (int muscle in FullMuscles(scoped, mapped))
-                clip.SetCurve("", typeof(Animator), MuscleProperty(names[muscle]), PolyLine(BodyTimes, FullValues(muscle, scoped)));
+                clip.SetCurve("", typeof(Animator), MuscleProperty(names[muscle]),
+                    scoped ? LinearCurve(BodyTimes, FullValues(muscle, true)) : PolyLine(BodyTimes, FullValues(muscle, false)));
         if (variant.Knee)
             foreach (var (muscle, values) in KneeCurves)
                 clip.SetCurve("", typeof(Animator), names[MuscleIndex(names, muscle)], PolyLine(KneeTimes, values));
@@ -516,6 +532,16 @@ static partial class UnityrsFixtureBuilder
                     || index.GetArrayElementAtIndex(track.attribute).intValue != slot)).Select(track => track.track).ToArray();
             Require(missing.Length == 0, "The built clip lost or moved its compiled " + string.Join(", ", missing)
                 + " track(s) in " + name + (indexed ? " (m_IndexArray checked)." : " (m_IndexArray not exposed)."));
+            // Every compiled humanoid binding, not only the tracks above, must be the slot its
+            // attribute's m_IndexArray entry names: an orphaned one (-1) or a second one for the
+            // attribute is a conflicting mapping the runtime refuses (clip.rs, ConflictingHumanMapping).
+            if (indexed)
+            {
+                var conflicting = HumanBindings(serialized).Where(row => row.attribute >= index.arraySize
+                    || index.GetArrayElementAtIndex(row.attribute).intValue != row.slot).Select(row => row.attribute).ToArray();
+                Require(conflicting.Length == 0, "The built clip binds Animator attribute(s) " + string.Join(", ", conflicting)
+                    + " at slots its m_IndexArray does not name (orphaned or conflicting) in " + name + ".");
+            }
             return indexed;
         }
     }
@@ -523,6 +549,26 @@ static partial class UnityrsFixtureBuilder
     // The compiled humanoid track table (m_ClipBindingConstant): each Animator
     // attribute bound to the Animator root (path 0, Animator class 95, humanoid
     // custom type 8) and its row; null where the Editor exposes no table.
+    // Every humanoid binding (Animator class 95, custom type 8, any path) and its
+    // slot, the bindings before it counted at their widths as completion counts
+    // them (anim_fixture_contract.compiled_curves): a Transform's rotation four,
+    // its position, scale and Euler curves three, anything else one.
+    static IEnumerable<(int attribute, int slot)> HumanBindings(SerializedObject serialized)
+    {
+        var bindings = serialized.FindProperty("m_ClipBindingConstant.genericBindings");
+        if (bindings == null || !bindings.isArray) yield break;
+        int slot = 0;
+        for (int i = 0; i < bindings.arraySize; i++)
+        {
+            var row = bindings.GetArrayElementAtIndex(i);
+            int Field(string field, string alias = null) =>
+                (row.FindPropertyRelative(field) ?? (alias == null ? null : row.FindPropertyRelative(alias)))?.intValue ?? -1;
+            int type = Field("typeID", "classID"), attribute = Field("attribute");
+            if (type == 95 && Field("customType") == 8) yield return (attribute, slot);
+            slot += type != 4 ? 1 : attribute == 2 ? 4 : attribute >= 1 && attribute <= 4 ? 3 : 1;
+        }
+    }
+
     static Dictionary<int, int> CompiledSlots(SerializedObject serialized)
     {
         var bindings = serialized.FindProperty("m_ClipBindingConstant.genericBindings");
