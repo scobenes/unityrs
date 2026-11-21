@@ -16,7 +16,8 @@
 //! `body_avatar` validates the Avatar inputs of the humanoid body model
 //! (`docs/plans/humanoid-body.md`), and `body_model` holds freeze v8's
 //! centre of mass, frame and scope, `body_solve` its hips solve, `root`
-//! its root projection and `chain` the Animator chain to the hips; no
+//! its root projection, `chain` the Animator chain to the hips and
+//! `muscle_pose` each bone's local rotation from its muscles (B5a); no
 //! refusal above calls them yet.
 mod avatar;
 mod body;
@@ -24,6 +25,8 @@ pub mod body_model;
 pub mod body_solve;
 pub mod chain;
 mod clip;
+pub mod gate;
+pub mod muscle_pose;
 pub mod root;
 mod root_sample;
 
@@ -174,6 +177,28 @@ pub const TWIST_BONES: [(&str, [usize; 4]); 4] = [
     ("m_LegTwist", [3, 4, 5, 6]),
 ];
 
+/// The `HumanTrait` limb-twist muscles: each upper and lower leg, foot,
+/// arm and forearm twist. On round 11's twist-0 rigs Unity turns none of
+/// their own bones by them and carries the twist down the limb instead,
+/// which one bone's equation does not model (URS-42), so a clip that maps
+/// any of them refuses whatever the Avatar's twist settings.
+pub const LIMB_TWIST_MUSCLES: [usize; 10] = [23, 25, 27, 31, 33, 35, 41, 43, 50, 52];
+
+/// The Animator float property each of `LIMB_TWIST_MUSCLES` binds by name,
+/// in the same order (`HumanTrait.MuscleName`).
+pub const LIMB_TWIST_PROPERTIES: [&str; 10] = [
+    "Left Upper Leg Twist In-Out",
+    "Left Lower Leg Twist In-Out",
+    "Left Foot Twist In-Out",
+    "Right Upper Leg Twist In-Out",
+    "Right Lower Leg Twist In-Out",
+    "Right Foot Twist In-Out",
+    "Left Arm Twist In-Out",
+    "Left Forearm Twist In-Out",
+    "Right Arm Twist In-Out",
+    "Right Forearm Twist In-Out",
+];
+
 /// The limbs each stretch setting lengthens: the arms, the legs, and the
 /// feet's spacing on the legs.
 pub const STRETCH_BONES: [(&str, [usize; 6]); 3] = [
@@ -185,8 +210,8 @@ pub const STRETCH_BONES: [(&str, [usize; 6]); 3] = [
 /// The typed refusal for a humanoid clip on one rig, in the order the
 /// module documents: Avatar and hierarchy, required bones, Animator root
 /// and generic writers, other pose features, body slots, muscle bones and
-/// axes, twist and stretch on the animated limbs, clip settings, root
-/// basis, then the body offset. A read or resource failure is returned in
+/// axes, twist on the animated limbs, any limb-twist muscle, stretch on the
+/// animated limbs, clip settings, root basis, then the body offset. A read or resource failure is returned in
 /// place of the refusal.
 pub fn humanoid_refusal(
     clip: &Clip,
@@ -302,6 +327,14 @@ fn refusal(
         if value != NEUTRAL_TWIST && moves(&bones) {
             return Ok(AnimError::UnsupportedHumanoidTwist(field));
         }
+    }
+    // A limb-twist curve refuses at any twist setting, the neutral one
+    // included: nothing turns a bone from it.
+    if let Some(slot) = slots
+        .mapped(DofKind::Muscle)
+        .find(|slot| LIMB_TWIST_MUSCLES.contains(&slot.ordinal))
+    {
+        return Ok(AnimError::UnsupportedHumanoidLimbTwist(slot.ordinal));
     }
     for ((field, bones), value) in
         STRETCH_BONES

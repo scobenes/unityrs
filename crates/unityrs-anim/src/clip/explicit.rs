@@ -394,6 +394,18 @@ fn float_property(dict: &Dict<'_, '_>, row: &Value) -> Result<Option<Property>, 
     let class = dict.int(row, "classID")?;
     let property = match (class, attribute.as_bytes()) {
         (137, name) if name.starts_with(b"blendShape.") => Property::Morph(attribute),
+        // An Animator float curve on a limb-twist muscle refuses as the
+        // built clip's would, never dropped with the metadata (URS-42).
+        (95, name) => {
+            if let Some(muscle) = crate::humanoid::LIMB_TWIST_PROPERTIES
+                .iter()
+                .zip(crate::humanoid::LIMB_TWIST_MUSCLES)
+                .find_map(|(property, muscle)| (property.as_bytes() == name).then_some(muscle))
+            {
+                return Err(AnimError::UnsupportedHumanoidLimbTwist(muscle));
+            }
+            return Ok(None);
+        }
         (4 | 224, name) => {
             let (kind, suffix) = if let Some(suffix) = name.strip_prefix(b"m_LocalPosition.") {
                 (T::Translation, suffix)

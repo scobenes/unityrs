@@ -475,6 +475,10 @@ def basis_off(values):
     return off
 
 
+# The limb-twist muscles the runtime refuses at any twist setting (Rust's humanoid::LIMB_TWIST_MUSCLES, URS-42).
+LIMB_TWIST_MUSCLES = frozenset((23, 25, 27, 31, 33, 35, 41, 43, 50, 52))
+
+
 def causes(entry, avatar, clip, neutral_avatar):
     """Every typed cause the clip has, in no order (the Rust reader picks one)."""
     mapped = {row["kind"] for row in entry["slots"] if row["storage"] != "absent"}
@@ -500,6 +504,10 @@ def causes(entry, avatar, clip, neutral_avatar):
         if entry["avatar_settings"][name] != neutral_avatar[name] and animated & set(LIMBS[name]):
             kind = "twist" if name in TWIST else "avatar_setting"
             found.append(f"unsupported_humanoid_{kind}({name})")
+    # Any limb-twist muscle, at any twist setting (Rust's humanoid::LIMB_TWIST_MUSCLES, URS-42).
+    found += [f"unsupported_humanoid_limb_twist({ordinal})" for row in entry["slots"]
+              if row["kind"] == "muscle" and row["storage"] != "absent"
+              and (ordinal := dof_kind(row["dof"])[1]) in LIMB_TWIST_MUSCLES]
     found += [f"unsupported_humanoid_clip_settings({field})" for field in entry["verdicts"]["clip_settings"]]
     found += [f"unsupported_humanoid_root_basis({field})" for field in entry["verdicts"]["root_basis"]]
     residual = entry["verdicts"]["residual"]
