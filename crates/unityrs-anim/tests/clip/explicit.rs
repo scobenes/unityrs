@@ -347,3 +347,60 @@ fn a_nonroot_writer_fills_its_pose_from_that_nodes_rest() {
     assert_eq!(row.pose.position, [2., 4., 8.]);
     assert_eq!(row.pose.scale, [3., 4., 5.]);
 }
+
+#[test]
+fn an_explicit_limb_twist_curve_refuses_and_is_never_dropped() {
+    // URS-42: a mixed explicit clip, a scale curve beside an Animator float
+    // curve on a limb-twist muscle, refuses with the built clip's reason.
+    let scale = || {
+        f::curve(
+            "",
+            &[f::Key::new(2., [12.])],
+            [2; 2],
+            Some(4),
+            true,
+            Some(("m_LocalScale.y", 4)),
+        )
+    };
+    let animator = |name: &'static str| {
+        f::curve(
+            "",
+            &[f::Key::new(2., [0.5])],
+            [2; 2],
+            Some(4),
+            true,
+            Some((name, 95)),
+        )
+    };
+    let meter = Meter::unlimited();
+    for (property, muscle) in unityrs_anim::humanoid::LIMB_TWIST_PROPERTIES
+        .into_iter()
+        .zip(unityrs_anim::humanoid::LIMB_TWIST_MUSCLES)
+    {
+        let (clip, graph) = load(
+            f::explicit(
+                9,
+                2.,
+                &[("m_FloatCurves", vec![scale(), animator(property)])],
+            ),
+            false,
+        );
+        // The clip reads; its playback is the refusal, as every read refusal's.
+        let clip = read_clip(&clip, &meter).unwrap();
+        assert!(matches!(
+            bind(&clip, &graph, &meter),
+            Err(AnimError::UnsupportedHumanoidLimbTwist(m)) if m == muscle
+        ));
+    }
+    // Another Animator float stays metadata, as before.
+    let (clip, graph) = load(
+        f::explicit(
+            9,
+            2.,
+            &[("m_FloatCurves", vec![scale(), animator("Spine Front-Back")])],
+        ),
+        false,
+    );
+    let clip = read_clip(&clip, &meter).unwrap();
+    assert_eq!(bind(&clip, &graph, &meter).unwrap().tracks().len(), 1);
+}

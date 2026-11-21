@@ -184,6 +184,21 @@ pub const TWIST_BONES: [(&str, [usize; 4]); 4] = [
 /// any of them refuses whatever the Avatar's twist settings.
 pub const LIMB_TWIST_MUSCLES: [usize; 10] = [23, 25, 27, 31, 33, 35, 41, 43, 50, 52];
 
+/// The Animator float property each of `LIMB_TWIST_MUSCLES` binds by name,
+/// in the same order (`HumanTrait.MuscleName`).
+pub const LIMB_TWIST_PROPERTIES: [&str; 10] = [
+    "Left Upper Leg Twist In-Out",
+    "Left Lower Leg Twist In-Out",
+    "Left Foot Twist In-Out",
+    "Right Upper Leg Twist In-Out",
+    "Right Lower Leg Twist In-Out",
+    "Right Foot Twist In-Out",
+    "Left Arm Twist In-Out",
+    "Left Forearm Twist In-Out",
+    "Right Arm Twist In-Out",
+    "Right Forearm Twist In-Out",
+];
+
 /// The limbs each stretch setting lengthens: the arms, the legs, and the
 /// feet's spacing on the legs.
 pub const STRETCH_BONES: [(&str, [usize; 6]); 3] = [
