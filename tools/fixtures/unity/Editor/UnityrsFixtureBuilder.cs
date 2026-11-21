@@ -140,6 +140,7 @@ static partial class UnityrsFixtureBuilder
         }
 
         public void Note(string name, string note) => notes[name] = note;
+        public void Log(string message) => log(message);
 
         public void Set(string name, string status, string reason = "")
         {
@@ -207,7 +208,7 @@ static partial class UnityrsFixtureBuilder
         var target = variant.Target;
         var run = new RunIdentity { build_target = target.ToString(), build_target_id = (int)target, variant = variant.Name };
         string version = run.editor_version;
-        string relative = Path.Combine(Output, version, variant.Folder);
+        string relative = Path.Combine(variant.Root, version, variant.Folder);
         string assetDirectory = Path.GetFullPath(Application.dataPath);
         string project = Path.GetDirectoryName(assetDirectory);
         string generated = Path.Combine(assetDirectory, AssetFolder);
@@ -215,8 +216,9 @@ static partial class UnityrsFixtureBuilder
         string shortId = run.run_id.Substring(0, 8);
         string staging = output + ".b-" + shortId;
         string stagedLog = Path.Combine(staging, LogFile);
-        bool publishing = false, preserveStaging = false;
+        bool publishing = false, preserveStaging = variant.KeepStaging;
         string[] failures;
+        string finished = null;
         try
         {
             CheckOwned(output);
@@ -248,7 +250,8 @@ static partial class UnityrsFixtureBuilder
                     variant.AddDeferred(report);
                     Progress("Preparing fixtures", .05f);
                     var build = PrepareInFixtureScene(report, run.Stamp, variant.Prepare, ref preserveStaging);
-                    BuildAndCapture(build, report, staging, run, target, variant.Record, Log);
+                    BuildAndCapture(build, report, staging, run, target, variant.Record, Log, variant.BodyOnly);
+                    finished = variant.Finish?.Invoke(report, staging, run);
                     failures = report.Write(staging, projectPath, run);
                     // Only a recorded run is a round: a build-only run's replays are skipped, which completion refuses.
                     if (run.variant == "builtin" && variant.Record) WriteRound(staging, run.run_id);
@@ -266,7 +269,8 @@ static partial class UnityrsFixtureBuilder
             Publish(staging, output);
             publishing = false;
             EditorUtility.ClearProgressBar();
-            string location = "Unity " + version + " / " + target + "\n\nOutput in your project folder:\n" + relative;
+            string location = "Unity " + version + " / " + target + "\n\nOutput in your project folder:\n" + relative
+                + (finished == null ? "" : "\n\n" + finished);
             // "Ready" for a recorded Built-in run and for the URP and Android runs, whose bundles are
             // the run (they record nothing by design). Only the Built-in build-only menu item's
             // output has nothing to send: it records nothing a Built-in run must.
@@ -439,9 +443,11 @@ static partial class UnityrsFixtureBuilder
             StringComparer.Ordinal);
 
     static void BuildAndCapture(Build build, RunReport report, string staging, RunIdentity run, BuildTarget target,
-        bool record, Action<string> log)
+        bool record, Action<string> log, bool bodyOnly = false)
     {
-        Require(build.Bundles.Count > 0, "No fixtures could be prepared. See the log and Console.");
+        // A body-only run (round 12) builds its body bundles and never the main ones.
+        Require(bodyOnly ? build.Bundles.Count == 0 && build.BodyBundles.Count > 0 : build.Bundles.Count > 0,
+            "No fixtures could be prepared. See the log and Console.");
         string bundles = Path.Combine(staging, "bundles");
         string replays = Path.Combine(staging, "replays");
         Progress("Building asset bundles", .5f);
@@ -450,11 +456,11 @@ static partial class UnityrsFixtureBuilder
         StampBundleAssets(build.BodyBundles, run.Stamp);
         AssetDatabase.SaveAssets();
         Directory.CreateDirectory(bundles);
-        var manifest = BuildPipeline.BuildAssetBundles(bundles, build.Bundles.ToArray(),
+        var manifest = bodyOnly ? null : BuildPipeline.BuildAssetBundles(bundles, build.Bundles.ToArray(),
             BuildAssetBundleOptions.ChunkBasedCompression | BuildAssetBundleOptions.StrictMode, target);
-        Require(manifest != null, "Unity could not build the fixture bundles. See the log and Console.");
+        Require(bodyOnly || manifest != null, "Unity could not build the fixture bundles. See the log and Console.");
 
-        var main = BundleContents(manifest);
+        var main = bodyOnly ? new Dictionary<string, string[]>(StringComparer.Ordinal) : BundleContents(manifest);
         var built = new HashSet<string>(main.Keys, StringComparer.Ordinal);
         // Unity writes an extra manifest bundle and text manifests. The handoff contains the stamped case bundles.
         foreach (string path in Directory.EnumerateFiles(bundles))

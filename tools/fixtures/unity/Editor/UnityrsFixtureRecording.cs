@@ -92,7 +92,22 @@ public static partial class AnimReplayRecorder
     [Serializable] sealed class PendingClipSpec : PendingSpec { public Timepoint[] schedule; }
     [Serializable] sealed class PendingPoseSpec : PendingSpec { public Point[] schedule; }
 
+    // A round 12 case (fixture.Diagnose) records its motion checks as diagnostics (UnityrsRound12Recording.cs),
+    // written beside the capture however the case ends; its structural checks still fail it.
     internal static bool RecordFixture(UnityrsFixtureBuilder.ReplayCase fixture, string bundles, string output,
+        string runId, Action<string> log)
+    {
+        BeginDiagnostics(fixture);
+        try
+        {
+            bool mixed = RecordCase(fixture, bundles, output, runId, log);
+            completed = true;
+            return mixed;
+        }
+        finally { EndDiagnostics(fixture, output, runId); }
+    }
+
+    static bool RecordCase(UnityrsFixtureBuilder.ReplayCase fixture, string bundles, string output,
         string runId, Action<string> log)
     {
         var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(fixture.Prefab);
@@ -342,16 +357,29 @@ public static partial class AnimReplayRecorder
         }
 
         const float tolerance = .25f;
-        var expectedStart = AuthoredRotation(0);
-        var expectedStop = AuthoredRotation(1);
-        var neutral = Rotation(capture.samples[0]);
-        var single = Rotation(capture.samples.Single(sample => sample.local == .5));
         var last = capture.samples[capture.samples.Length - 1];
+        // A round 12 clip's end may lie past 1 (its subset clip's keys run to 7 s): the authored end is its last.
+        var expectedStart = AuthoredRotation(0);
+        var expectedStop = AuthoredRotation(diagnostics == null ? 1 : (float)last.local);
+        var neutral = Rotation(capture.samples[0]);
         var combined = Rotation(last);
-        Need(Quaternion.Angle(neutral, expectedStart) <= tolerance && Quaternion.Angle(combined, expectedStop) <= tolerance,
-            "Built Spine rotation differs from the authored endpoint pose in " + name + ".");
-        Need(Quaternion.Angle(neutral, single) > 1 && Quaternion.Angle(single, combined) > 1,
-            "Humanoid playback did not move the Spine at the authored probes for " + name + ".");
+        string endpoint = "Built Spine rotation differs from the authored endpoint pose in " + name + ".";
+        Check(Quaternion.Angle(neutral, expectedStart) <= tolerance, "spine_start", 0,
+            Quaternion.Angle(neutral, expectedStart), tolerance, endpoint);
+        Check(Quaternion.Angle(combined, expectedStop) <= tolerance, "spine_stop", capture.samples.Length - 1,
+            Quaternion.Angle(combined, expectedStop), tolerance, endpoint);
+        string moved = "Humanoid playback did not move the Spine at the authored probes for " + name + ".";
+        var middle = diagnostics == null ? capture.samples.Single(sample => sample.local == .5)
+            : capture.samples.FirstOrDefault(sample => sample.local == .5);
+        if (middle == null)
+            Check(false, "spine_turns", -1, double.NaN, 1, "no sample at local .5: " + moved);
+        else
+        {
+            var single = Rotation(middle);
+            int index = Array.IndexOf(capture.samples, middle);
+            Check(Quaternion.Angle(neutral, single) > 1, "spine_turn_first", index, Quaternion.Angle(neutral, single), 1, moved);
+            Check(Quaternion.Angle(single, combined) > 1, "spine_turn_second", index, Quaternion.Angle(single, combined), 1, moved);
+        }
         editor.spine_start_f32 = Bits(expectedStart);
         editor.spine_stop_f32 = Bits(expectedStop);
         editor.spine_endpoint_tolerance_degrees = tolerance;

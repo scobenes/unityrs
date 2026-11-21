@@ -384,7 +384,10 @@ class MuscleSweepTests(unittest.TestCase):
                           clips_source)
         self.assertEqual(tuple(re.findall(r'"(\w+)"', re.search(r"FrameBones = \{(.*?)\};", recording).group(1))),
                          scope.FRAME_BONES)
-        self.assertIn('if (fixture.Body.Variant == "muscle")', recording)
+        # Fatal for every case but a round 12 one, whose motion checks are diagnostics (Check is Need otherwise).
+        self.assertIn('if (fixture.Body.Variant == "muscle" || fixture.Body.Variant == "table")', recording)
+        self.assertIn("        if (diagnostics == null)\n        {\n            Need(passed, message);",
+                      source("UnityrsRound12Recording.cs"))
         self.assertIn('if (fixture.Body.Kind == "clip" && fixture.Body.Spec.Scoped)', recording)
         self.assertIn("            CheckBodyResponse(capture as HumanCapture, fixture, body);\n"
                       "            SetBodyEvidence(", source("UnityrsFixtureRecording.cs"))
