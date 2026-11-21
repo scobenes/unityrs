@@ -37,6 +37,10 @@ gltf = ["dep:unityrs-gltf", "unityrs-export?/gltf"]
 export = ["dep:unityrs-export"]
 batch = ["dep:unityrs-batch"]
 
+# docs.rs documents every module, the opt-in `batch` and `encode` included.
+[package.metadata.docs.rs]
+all-features = true
+
 [dependencies]
 unityrs-core = { version = "1.0.0", path = "../unityrs-core" }
 unityrs-tpk = { version = "1.0.0", path = "../unityrs-tpk", optional = true }

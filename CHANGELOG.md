@@ -25,8 +25,11 @@ tiers.
   newer formats UnityPy's development head reads (SerializedFile v23-26,
   bundle format 9).
 - **Writing.** Object, file and bundle saves, and `set_image`.
-- **Textures.** Every TextureFormat UnityPy decodes, its pixels and modes
-  equal to UnityPy's (BCn, ETC/EAC, ATC, PVRTC, crunch and ASTC among them),
+- **Textures.** Every TextureFormat UnityPy decodes (BCn, ETC/EAC, ATC,
+  PVRTC, crunch and ASTC among them): pixels and modes equal to UnityPy's
+  where it is right (Tier A), and corrected against an independent
+  reference where it is wrong (Tier C, such as signed EAC and ETC2
+  punch-through alpha; `PARITY.md` section 19.1);
   the Switch and Xbox platform gates and Texture2DArray; PNG bytes identical
   to Pillow 9.5.0's; lossy WebP; and the other Pillow image writers.
 - **Other exports.** Sprites (with tight-mesh rendering), the NGUI atlas
@@ -40,9 +43,13 @@ tiers.
   run in parallel under explicit memory budgets, writing to a directory,
   archives or S3-compatible object stores, with a run manifest and typed
   failure reasons.
-- **Safety.** Every input is metered: allocations are charged to a budget
-  before they are made, and size, work and depth limits refuse hostile
-  input with a typed error instead of exhausting memory.
+- **Bounded input.** The storage unityrs retains or stages while it reads
+  and decodes an asset input is charged to that input's budget before it is
+  allocated, and size, work and depth limits refuse hostile input with a
+  typed error. The budget covers that work only: values once handed to the
+  caller (Python owns them), objects the caller builds, and third-party
+  work such as Pillow's decoding of a caller's image for `set_image` are
+  outside it (`crates/unityrs-py/README.md` states the threat model).
 - **Python.** The `unityrs` package follows UnityPy's API (`Environment`,
   object mode, the generated classes from a TPK, the helpers and the
   exporters), with the GIL released while the core works.

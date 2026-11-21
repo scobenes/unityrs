@@ -19,8 +19,11 @@
 //! | [`export`] | `unityrs-export` | sprites, the NGUI cutter and the extractor tree | yes |
 //! | `batch` | `unityrs-batch` | the batch engine behind `unityrs batch` | no |
 //!
-//! Every input is metered: allocations are charged to a budget before they
-//! are made, and limits refuse hostile input with a typed error.
+//! The storage unityrs retains or stages while it reads and decodes an asset
+//! input is charged to that input's budget before it is allocated, and size,
+//! work and depth limits refuse hostile input with a typed error. Values
+//! once returned to the caller, and anything the caller builds, are outside
+//! that budget.
 //!
 //! ```no_run
 //! use std::path::Path;

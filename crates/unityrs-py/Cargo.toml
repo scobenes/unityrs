@@ -9,6 +9,8 @@ repository.workspace = true
 authors.workspace = true
 # Ships as the `unityrs` wheel on PyPI (pyproject.toml), not on crates.io.
 publish = false
+# maturin's sdist packs the crate as cargo would: no tests or fixtures.
+exclude = ["/tests/", "/python/tests/"]
 
 [lib]
 name = "_native"
