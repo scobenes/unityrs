@@ -17,7 +17,7 @@ scripts/dev python tools/bench/bench.py run --out DIR --quick
 # The fixtures alone, checked against benchmarks/fixtures.json; --update records both scales after a builder change:
 python tools/bench/bench.py gen --scale gate --out DIR
 python tools/bench/bench.py gen --update
-# The README's section and BENCHMARKS.md from benchmarks/wall.json and benchmarks/gate.json:
+# The README's section and BENCHMARKS.md from benchmarks/wall*.json and benchmarks/gate.json:
 python tools/bench/bench.py render [--check]
 ```
 
@@ -30,6 +30,12 @@ rendered docs, and CI's `check --wall-run` step verifies the run (its workflow, 
 change since its commit to the measured paths, which are the workflow, the inputs and every repository module the
 measurement imports, and the artifact byte-equal to the file). A run on an emulated host, at the gate scale, with
 fewer rounds than `workloads.json` names or missing a workload is refused.
+
+**Another runner CPU.** GitHub's runners differ in CPU model between runs, and some rows move with it. To publish a
+run on a CPU `wall.json` does not hold, commit its artifact beside it as `benchmarks/wall-<cpu>.json` (say
+`wall-epyc.json`), byte-equal, and run `render`: the README and BENCHMARKS.md then show one summary table per
+CPU, `wall.json`'s first. `check --wall-run` verifies every results file a PR changes; `render` refuses a
+`wall-<cpu>.json` without `wall.json`, or two files on one CPU.
 
 **The gate.** CI's `bench-gate` job (`ci.yml`) counts instructions instead of timing: in `debian:bookworm`, pinned
 by digest, with valgrind from `install_valgrind.sh`, `bench.py gate` runs each workload's Rust scope

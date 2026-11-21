@@ -45,6 +45,46 @@ class RenderTests(unittest.TestCase):
         self.assertIn("| texture-BC6H | PARITY.md row is Tier B |", md)
         self.assertIn("| texture-DXT1 | calibrating | ", md)
 
+    def test_the_summary_names_its_runner_cpu_and_has_memory_and_cpu_columns(self):
+        root = scratch_tree(self, wall())
+        self.assertEqual(bench.render(root, check=False), [])
+        inner = (root / "README.md").read_text(encoding="utf-8").split(results.BEGIN)[1].split(results.END)[0]
+        self.assertEqual(inner.count("Runner CPU: Synthetic CPU (commit 0123456789ab, 2026-11-19)."), 1)
+        self.assertIn("| speedup | peak memory | process CPU |", inner)
+        self.assertIn("only this CPU's run is committed so far", inner)
+
+    def test_a_run_on_another_cpu_renders_its_own_table(self):
+        other = wall(times={("texture-DXT1", "unitypy"): [0.5] * 7})
+        other["machine"]["cpu"] = "Other CPU"
+        root = scratch_tree(self, wall())
+        (root / "benchmarks" / "wall-other.json").write_text(bench.dump_json(other), encoding="utf-8")
+        self.assertEqual(bench.render(root, check=False), [])
+        self.assertEqual(bench.render(root, check=True), [])
+        inner = (root / "README.md").read_text(encoding="utf-8").split(results.BEGIN)[1].split(results.END)[0]
+        first, second = inner.index("Runner CPU: Synthetic CPU"), inner.index("Runner CPU: Other CPU")
+        self.assertLess(first, second)  # wall.json first
+        self.assertEqual(inner.count("| read and decode textures |"), 2)
+        self.assertIn("each CPU's committed run has its own table", inner)
+        md = (root / "BENCHMARKS.md").read_text(encoding="utf-8")
+        self.assertIn("## 2. The runs", md)
+        self.assertIn("### Other CPU", md)
+        self.assertIn("Sections 5 and 6 are the Synthetic CPU run's (`benchmarks/wall.json`).", md)
+
+    def test_another_cpus_file_needs_wall_json_and_its_own_cpu(self):
+        root = scratch_tree(self, wall())
+        (root / "benchmarks" / "wall-twin.json").write_text(bench.dump_json(wall()), encoding="utf-8")
+        self.assertEqual(bench.render(root, check=True), ["benchmarks/wall-twin.json: its CPU 'Synthetic CPU' is "
+                                                          "benchmarks/wall.json's; keep one run a CPU"])
+        (root / "benchmarks" / "wall.json").unlink()
+        bad = bench.render(root, check=True)
+        self.assertEqual(bad, ["benchmarks/wall-twin.json: a run on another CPU needs benchmarks/wall.json beside it"])
+        doc = wall(emulated=True)
+        doc["machine"]["cpu"] = "Other CPU"
+        root = scratch_tree(self, wall())
+        (root / "benchmarks" / "wall-other.json").write_text(bench.dump_json(doc), encoding="utf-8")
+        bad = bench.render(root, check=True)
+        self.assertTrue(bad and bad[0].startswith("benchmarks/wall-other.json: ") and "emulated" in bad[0], bad)
+
     def test_a_stale_section_or_benchmarks_md_fails_the_check(self):
         root = scratch_tree(self, wall())
         bench.render(root, check=False)

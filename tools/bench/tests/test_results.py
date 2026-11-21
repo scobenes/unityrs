@@ -51,6 +51,27 @@ class AggregationTests(unittest.TestCase):
         x = results.speedup([10, 12, 14], [1, 2, 4])
         self.assertEqual(x, {"ratio": 6.0, "low": 2.5, "high": 14.0})
 
+    def test_memory_and_cpu_ratios_sum_each_round_like_times(self):
+        names = ("typetree-objects-lz4", "typetree-objects-2019")
+        doc = wall(names=names)
+        for e in doc["workloads"]:
+            for r in e["runs"]:
+                big = e["impl"] == "unitypy"
+                r["peak_pss_bytes"] = (300 if big else 100) * 2**20 if e["name"] == names[0] else 100 * 2**20
+                r["cpu_s"] = 3.0 if big else 1.0
+        row = next(r for r in results.summary(doc, WORKLOADS) if r["category"] == "typetree")
+        self.assertEqual((row["memory"], row["cpu"]), (2.0, 3.0))  # (300 + 100) / (100 + 100); 6 / 2
+        table = "\n".join(results.summary_table(doc, WORKLOADS, ranges=False))
+        self.assertIn("| ×10.0 | ×2.0 | ×3.0 |", table)
+
+    def test_a_missing_peak_pss_leaves_the_memory_ratio_out(self):
+        doc = wall(names=("texture-DXT1",))
+        next(e for e in doc["workloads"] if e["impl"] == "unityrs")["runs"][2]["peak_pss_bytes"] = None
+        row = results.summary(doc, WORKLOADS)[0]
+        self.assertIsNone(row["memory"])
+        self.assertIsNotNone(row["cpu"])
+        self.assertTrue(results.summary_table(doc, WORKLOADS, ranges=False)[2].endswith("| — | ×2.8 |"))
+
     def test_unpaired_workloads_count_in_no_category(self):
         doc = wall(NAMES, status={("texture-DXT1", "unitypy", 0): "raised:KeyError"})
         cats = [r["category"] for r in results.summary(doc, WORKLOADS)]

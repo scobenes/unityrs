@@ -8,7 +8,11 @@ Otherwise it is unpaired, with the first reason that applies, and appears only i
 **Aggregation** (section 3). A workload's figure is the median of its rounds' scope times, with the min and max as
 its spread. A category's figure is, for each round, the sum of its paired workloads' times, then the median of those
 round totals, the min and max giving its spread. The speedup is the ratio of the two medians; its range runs from
-min(UnityPy) / max(unityrs) to max(UnityPy) / min(unityrs), over the round totals.
+min(UnityPy) / max(unityrs) to max(UnityPy) / min(unityrs), over the round totals. A category's peak-memory and
+process-CPU ratios are aggregated the same way, from each run's `peak_pss_bytes` and `cpu_s`.
+
+**Several runner CPUs.** `benchmarks/wall.json` is the primary run; a run on another runner CPU is committed beside it
+as `benchmarks/wall-<cpu>.json`. The summaries render one table per file, each named by its CPU.
 """
 
 from __future__ import annotations
@@ -208,21 +212,38 @@ def speedup(slow: list[float], fast: list[float]) -> dict:
     }
 
 
-def category_totals(wall: dict, workloads: dict, category: str) -> dict | None:
-    """impl -> the per-round totals of the category's paired workloads, or None when none is paired."""
+def round_totals(wall: dict, names: list[str], impl: str, field: str) -> list[float] | None:
+    """The per-round sums of `field` over the workloads `names` for `impl`, or None when a run lacks it (a peak PSS
+    the host could not sample)."""
+    rounds = []
+    for n in names:
+        got = [r[field] for r in sorted(entries(wall, n)[impl]["runs"], key=lambda r: r["round"])]
+        if None in got:
+            return None
+        rounds.append(got)
+    return [sum(r) for r in zip(*rounds, strict=True)]
+
+
+def category_totals(wall: dict, workloads: dict, category: str, field: str = "scope_s") -> dict | None:
+    """impl -> the per-round totals of `field` over the category's paired workloads (None for an impl lacking it),
+    or None when none is paired."""
     names = [s["name"] for s in workloads["workloads"] if s["category"] == category]
     paired = [n for n, (ok, _) in pairings(wall, workloads).items() if ok and n in names]
     if not paired:
         return None
-    out = {}
-    for impl in IMPLS:
-        rounds = [times(entries(wall, n)[impl]) for n in paired]
-        out[impl] = [sum(r) for r in zip(*rounds, strict=True)]
-    return {"workloads": paired, "totals": out}
+    return {"workloads": paired, "totals": {impl: round_totals(wall, paired, impl, field) for impl in IMPLS}}
+
+
+def ratio(totals: dict) -> float | None:
+    """UnityPy's median round total over unityrs's, or None when either side lacks one."""
+    if totals["unitypy"] is None or totals["unityrs"] is None:
+        return None
+    return speedup(totals["unitypy"], totals["unityrs"])["ratio"]
 
 
 def summary(wall: dict, workloads: dict) -> list[dict]:
-    """One row a category with a paired workload: its figures for both implementations and the speedup."""
+    """One row a category with a paired workload: its times for both implementations, the speedup, and the
+    UnityPy-over-unityrs ratios of peak PSS and process CPU (None when a peak PSS is missing)."""
     rows = []
     for cat in workloads["categories"]:
         got = category_totals(wall, workloads, cat["name"])
@@ -236,6 +257,8 @@ def summary(wall: dict, workloads: dict) -> list[dict]:
             "unitypy": spread(totals["unitypy"]),
             "unityrs": spread(totals["unityrs"]),
             "speedup": speedup(totals["unitypy"], totals["unityrs"]),
+            "memory": ratio(category_totals(wall, workloads, cat["name"], "peak_pss_bytes")["totals"]),
+            "cpu": ratio(category_totals(wall, workloads, cat["name"], "cpu_s")["totals"]),
         })
     return rows
 
@@ -311,30 +334,59 @@ def inventory(row: dict, wall: dict, workloads: dict) -> str:
     return ", ".join(parts)
 
 
+def fmt_ratio(r: float | None) -> str:
+    return "—" if r is None else fmt_x(r)
+
+
 def summary_table(wall: dict, workloads: dict, ranges: bool) -> list[str]:
-    lines = ["| operation (timer contains) | inventory | UnityPy | unityrs | speedup |", "|---|---|---|---|---|"]
+    lines = ["| operation (timer contains) | inventory | UnityPy | unityrs | speedup | peak memory | process CPU |",
+             "|---|---|---|---|---|---|---|"]
     for row in summary(wall, workloads):
         x = row["speedup"]
         sx = fmt_x(x["ratio"]) + (f" ({x['low']:.2f}–{x['high']:.2f})" if ranges else "")
         lines.append(f"| {row['label']} | {inventory(row, wall, workloads)} | {fmt_s(row['unitypy']['median'])} | "
-                     f"{fmt_s(row['unityrs']['median'])} | {sx} |")
+                     f"{fmt_s(row['unityrs']['median'])} | {sx} | {fmt_ratio(row['memory'])} | "
+                     f"{fmt_ratio(row['cpu'])} |")
     return lines
 
 
-def readme_section(wall: dict | None, workloads: dict) -> str:
-    """The text between the README's markers."""
-    if wall is None:
+def run_label(wall: dict) -> str:
+    return f"Runner CPU: {wall['machine']['cpu']} (commit {wall['commit'][:12]}, {wall['date']})."
+
+
+def summaries(walls: list[dict], workloads: dict, ranges: bool) -> list[str]:
+    """One summary table per committed run, each after the line naming its runner CPU."""
+    out = []
+    for wall in walls:
+        out += [run_label(wall), "", *summary_table(wall, workloads, ranges), ""]
+    return out
+
+
+RATIOS = ("The speedup, peak memory and process CPU columns are each UnityPy's figure over unityrs's, so ×2.0 means "
+          "unityrs needs half. Memory (peak summed PSS) and CPU cover the whole process, imports included.")
+
+
+def cpu_note(walls: list[dict]) -> str:
+    if len(walls) == 1:
+        return ("GitHub's runners differ in CPU model between runs (AMD EPYC or Intel Xeon) and times move with it, "
+                "per-format texture rows most; only this CPU's run is committed so far.")
+    return "GitHub's runners differ in CPU model between runs; each CPU's committed run has its own table."
+
+
+def readme_section(walls: list[dict], workloads: dict) -> str:
+    """The text between the README's markers: the "Results pending" note without a run, else one summary table per
+    committed run (`benchmarks/wall.json` first)."""
+    if not walls:
         return PENDING
-    m = wall["machine"]
+    first = walls[0]
     head = (
-        f"unityrs against UnityPy {wall['tools']['unitypy']} with UnityPyBoost, the same Python script on both, on "
-        f"public synthetic fixtures, on GitHub's ubuntu-24.04 runner ({m['cpu']}), commit {wall['commit'][:12]}, "
-        f"{wall['date']}. Median of {wall['rounds']} rounds, each a fresh process with a warm file cache. API rows "
-        "time the operation after imports; the extraction row times the whole process, imports included."
+        f"unityrs against UnityPy {first['tools']['unitypy']} with UnityPyBoost, the same Python script on both, on "
+        f"public synthetic fixtures, on GitHub's ubuntu-24.04 runner. Median of {first['rounds']} rounds, each a "
+        "fresh process with a warm file cache. API rows time the operation after imports; the extraction row times "
+        f"the whole process, imports included. {RATIOS}"
     )
-    body = summary_table(wall, workloads, ranges=False)
-    tail = "Breakdown, memory, unityrs-only rows and how to rerun: [BENCHMARKS.md](BENCHMARKS.md)."
-    return "\n".join([head, "", *body, "", tail]) + "\n"
+    tail = "Breakdown, unityrs-only rows and how to rerun: [BENCHMARKS.md](BENCHMARKS.md)."
+    return "\n".join([head, "", *summaries(walls, workloads, ranges=False), cpu_note(walls), "", tail]) + "\n"
 
 
 def splice(text: str, inner: str) -> str:
@@ -366,15 +418,36 @@ def figure_cells(spec: dict, fig: dict | None) -> str:
             f"{fmt_mib(fig['peak_pss_bytes'])} | {throughput(spec, fig)}")
 
 
-def benchmarks_md(wall: dict, gate: dict | None, workloads: dict, fixtures: dict) -> str:
-    """All of BENCHMARKS.md (plan section 6)."""
+def run_lines(wall: dict) -> list[str]:
+    """Section 2's bullets for one run."""
     t, m = wall["tools"], wall["machine"]
+    return [
+        f"- Run {wall['run_id']}, attempt {wall['run_attempt']}, commit {wall['commit']}, {wall['date']}.",
+        f"- Machine: {m['cpu']}, {m['cores']} cores, {fmt_mib(m['memory_bytes'])}, kernel {m['kernel']}, "
+        f"runner image {m['runner_image']}.",
+        f"- unityrs {t['unityrs']}; {t['rustc'].splitlines()[0]}; UnityPy {t['unitypy']} with UnityPyBoost "
+        f"(sha256 {t['unitypyboost_sha256'][:16]}…); Pillow {t['pillow']}; Python {t['python']}.",
+        f"- Fixtures: the {wall['scale']} scale, manifest sha256 {wall['fixtures_sha256'][:16]}….",
+    ]
+
+
+def benchmarks_md(walls: list[dict], gate: dict | None, workloads: dict, fixtures: dict) -> str:
+    """All of BENCHMARKS.md (plan section 6): sections 2 and 4 for every committed run, the rest from the first
+    (`benchmarks/wall.json`)."""
+    wall = walls[0]
     pairs = pairings(wall, workloads)
+    runs = run_lines(wall)
+    if len(walls) > 1:
+        runs = []
+        for w in walls:
+            runs += [f"### {w['machine']['cpu']}", "", *run_lines(w), ""]
+        runs.pop()
     out = [
         "# Benchmarks",
         "",
-        "Generated by `python tools/bench/bench.py render` from `benchmarks/wall.json` and `benchmarks/gate.json`;",
-        "do not edit by hand. The README's summary is rendered from the same files.",
+        "Generated by `python tools/bench/bench.py render` from `benchmarks/wall.json`, any",
+        "`benchmarks/wall-<cpu>.json` and `benchmarks/gate.json`; do not edit by hand. The README's summary is",
+        "rendered from the same files.",
         "",
         "## 1. How to rerun",
         "",
@@ -386,14 +459,9 @@ def benchmarks_md(wall: dict, gate: dict | None, workloads: dict, fixtures: dict
         "The published numbers come only from the `bench-wall.yml` workflow on GitHub's ubuntu-24.04 runner;",
         "a run elsewhere is for comparison, and an emulated host's is never published.",
         "",
-        "## 2. This run",
+        "## 2. This run" if len(walls) == 1 else "## 2. The runs",
         "",
-        f"- Run {wall['run_id']}, attempt {wall['run_attempt']}, commit {wall['commit']}, {wall['date']}.",
-        f"- Machine: {m['cpu']}, {m['cores']} cores, {fmt_mib(m['memory_bytes'])}, kernel {m['kernel']}, "
-        f"runner image {m['runner_image']}.",
-        f"- unityrs {t['unityrs']}; {t['rustc'].splitlines()[0]}; UnityPy {t['unitypy']} with UnityPyBoost "
-        f"(sha256 {t['unitypyboost_sha256'][:16]}…); Pillow {t['pillow']}; Python {t['python']}.",
-        f"- Fixtures: the {wall['scale']} scale, manifest sha256 {wall['fixtures_sha256'][:16]}….",
+        *runs,
         "",
         "## 3. Inputs",
         "",
@@ -409,8 +477,10 @@ def benchmarks_md(wall: dict, gate: dict | None, workloads: dict, fixtures: dict
         if mix:
             text += "; blocks each: " + ", ".join(f"{k} {v:,}" for k, v in sorted(mix.items()))
         out.append(f"| `{f['name']}` | {f['bytes']:,} | `{f['sha256'][:16]}` | {text} |")
-    out += ["", "## 4. Summary", "", *summary_table(wall, workloads, ranges=True), ""]
+    out += ["", "## 4. Summary", "", RATIOS, "", *summaries(walls, workloads, ranges=True), cpu_note(walls), ""]
     out += ["## 5. By category", ""]
+    if len(walls) > 1:
+        out += [f"Sections 5 and 6 are the {wall['machine']['cpu']} run's (`benchmarks/wall.json`).", ""]
     specs = specs_by_name(workloads)
     for cat in workloads["categories"]:
         names = [n for n, (ok, _) in pairs.items() if ok and specs[n]["category"] == cat["name"]]
@@ -474,7 +544,9 @@ def benchmarks_md(wall: dict, gate: dict | None, workloads: dict, fixtures: dict
         "  and one digest across all of them.",
         "- Process CPU and peak PSS are the whole process's (imports, setup and the warm-up included); peak PSS is",
         "  the summed proportional set size of the run's process tree, sampled every 50 ms.",
-        "- Wall clock on a shared runner is noisy; CI gates on instruction counts instead (section 7).",
+        "- Wall clock on a shared runner is noisy, and GitHub's runners differ in CPU model between runs; CI gates on",
+        "  instruction counts instead (section 7). A run on another CPU is committed beside `benchmarks/wall.json` as",
+        "  `benchmarks/wall-<cpu>.json` (its `bench-wall.yml` artifact, renamed), and each renders its own summary.",
         "",
     ]
     return "\n".join(out)

@@ -94,6 +94,15 @@ class WallRunTests(unittest.TestCase):
         self.artifacts = {"artifacts": []}
         self.assertEqual(self.check(), ["run 12345: 0 artifacts named bench-wall-12345-1"])
 
+    def test_another_cpus_results_file_is_checked_by_its_own_name(self):
+        self.path = self.path.rename(self.path.with_name("wall-other.json"))
+        self.assertEqual([p.name for p in bench.wall_paths(self.root)], ["wall-other.json"])
+        self.assertEqual(self.check(), [])
+        self.artifact = zipped(self.path.read_bytes() + b" ")
+        self.assertEqual(self.check("777"), ["run 777 is not wall-other.json's run 12345",
+                                             "benchmarks/wall-other.json is not byte-equal to run 12345's artifact "
+                                             "bench-wall-12345-1"])
+
     def test_another_run_id_or_an_emulated_run_fails(self):
         self.assertEqual(self.check("777"), ["run 777 is not wall.json's run 12345"])
         self.path.write_text(bench.dump_json(wall(emulated=True)), encoding="utf-8")
