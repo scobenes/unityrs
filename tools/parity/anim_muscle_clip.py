@@ -8,12 +8,15 @@ their errors come from Unity's compiled curves (anim_muscle_confirm).
 - `check_authored`: the capture's clip name and its authored Animator muscle curves are the builder's. The key
   times and values must match exactly in f32, and the tangents that shape each segment must match within f32
   rounding.
+- `check_root_settings`: the built clip's root settings are the variant's (anim_fixture_body.check_clip's and
+  anim_fixture_round11.clip_configuration's), so variants sharing their muscle curves stay apart.
 - `compiled_muscles`: the built clip's muscle tracks, read as the runtime reads them (clip.rs `read`):
   - `m_IndexArray` holds the full DOF layout;
   - every compiled humanoid binding sits at its entry's slot (anim_fixture_scope.check_human_mapping);
-  - the storage covers the bindings exactly;
-  - a muscle is mapped where its entry names a stored slot.
-  Each mapped muscle's track must be the builder's curve, its coefficients within f32 rounding of the polyline's.
+  - every entry other than -1 is owned by its own DOF's binding (`ConflictingHumanMapping` otherwise);
+  - the storage covers the bindings exactly.
+  Each mapped muscle's track must be the builder's curve: a streamed one's coefficients, or a dense one's every
+  frame, within f32 rounding of the polyline's.
   An inflated tangent in the built clip, which would widen a sample's bound, is refused.
 - `compiled_values`: each muscle's value at a sample's source time from its compiled track (0 unmapped). Its
   error bound has the same terms as `anim_muscle_pose.clip_values`, at the compiled cubic's operands.
@@ -92,6 +95,35 @@ def check_authored(case, doc, curves, clip_name):
         replay.require(good, f"{case}'s authored {prop} is not the builder's polyline")
 
 
+def check_root_settings(case, variant, clip):
+    """The built clip's root settings are the variant's: its bake and keep flags, height from feet, level and
+    orientation offset, and the settings B4 reads beyond them."""
+    import anim_fixture_round11 as r11
+    from anim_fixture_body import CLIP_VARIANTS, SERIALIZED_ROOT, _built
+
+    want = CLIP_VARIANTS[variant]
+    built = dict(zip(SERIALIZED_ROOT[1:8], (*want["bake"], *want["keep"], want["height_from_feet"])))
+    built |= {"m_Level": want["level"], "m_OrientationOffsetY": want["orientation"]}
+    muscle = clip.get("m_MuscleClip", {})
+    replay.require(all(_built(muscle.get(key), value, replay) for key, value in built.items()),
+                   f"{case}: the built clip's root settings are not the {variant} variant's")
+    r11.clip_configuration(case, dict(variant=variant), clip, replay)
+
+
+def owners(clip):
+    """{slot: Animator DOF} of the built clip's humanoid bindings, each binding counted at its width."""
+    from anim_fixture_contract import TRANSFORM_CURVES
+
+    widths = {attribute: len(axes) for _, attribute, axes in TRANSFORM_CURVES.values()}
+    found, slot = {}, 0
+    for row in clip.get("m_ClipBindingConstant", {}).get("genericBindings", []):
+        class_id, attribute = row.get("typeID", row.get("classID")), row.get("attribute")
+        if class_id == 95 and row.get("customType") == 8:
+            found[slot] = attribute
+        slot += widths.get(attribute, 1) if class_id == 4 else 1
+    return found
+
+
 def compiled_muscles(case, clip, curves, names):
     """{muscle ordinal: compiled track} for every mapped muscle of the built clip, each checked against its
     builder curve; refuses an index, a binding or a track unlike the builder's or the runtime's layout."""
@@ -103,6 +135,10 @@ def compiled_muscles(case, clip, curves, names):
     replay.require(isinstance(index, list) and len(index) == DOF_COUNT and all(type(v) is int for v in index),
                    f"{case}: the built clip's m_IndexArray is not the {DOF_COUNT}-DOF humanoid layout")
     check_human_mapping(case, clip, replay)
+    owned = owners(clip)
+    unowned = [dof for dof, entry in enumerate(index) if entry != -1 and owned.get(entry) != dof]
+    replay.require(not unowned, f"{case}: m_IndexArray maps DOF(s) {unowned[:5]} to slots no binding of theirs "
+                                "owns (a conflicting mapping)")
     tracks = compiled_curves(clip, replay)
     bindings = clip.get("m_ClipBindingConstant", {}).get("genericBindings", [])
     replay.require(bool(tracks) == bool(bindings) and len(tracks) == len(bindings),
@@ -141,11 +177,19 @@ def check_track(track, times, values):
                 return False
         last = keys[-1][1]
         return near(last[3], f32(values[-1]), abs(values[-1])) and last[:3] == (0, 0, 0)
-    for t0, dt, v0, v1, _ in rows:
-        for s in (0, .5, 1):
-            value, _ = track_value(track, t0 + s * dt)
-            if not near(value, v0 + s * (v1 - v0), abs(v0) + abs(v1)):
-                return False
+    if len(keys) == 1:
+        return all(near(keys[0][1][3], v, abs(v)) for v in values)
+    # Every dense frame against the polyline at its time, and the frames spanning the curve's keys.
+    first, last = f32(times[0]), f32(times[-1])
+    if not (keys[0][0] <= first and keys[-1][0] >= last):
+        return False
+    for time, (_, _, _, value) in keys:
+        for t0, dt, v0, v1, _ in rows:
+            if t0 <= time <= t0 + dt:
+                want = v0 + (time - t0) / dt * (v1 - v0)
+                if not near(value, want, abs(v0) + abs(v1)):
+                    return False
+                break
     return True
 
 

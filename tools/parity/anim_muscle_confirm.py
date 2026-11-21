@@ -26,10 +26,14 @@ round 11's builder tables, never from literals:
 - A sample is identified as above, its time from the same source time the prediction and bound use (one
   whose recorded local time disagrees is refused). A sweep's must be one of the builder's vectors, at its time
   and with its values, and a clip's must be one of the schedule's times. A sample recorded twice is refused.
+- Each capture must be the builder's case: its prefab, clip and Avatar assets and its playback mode
+  (anim_fixture_contract.check_identity), and its Animator placement in the recorded rest pose (the prefab root
+  at the identity, the Animator node at the case's root, `placement`).
 - Each recorded bone's transform must be the Avatar's node for that bone, by path (`m_Skeleton.m_ID` through
-  `m_TOS` against the capture's node paths).
-- A clip's capture must play the builder's clip: its name, and its authored and compiled muscle curves within
-  f32 rounding of the builder's (anim_muscle_clip). The compiled index array must hold the runtime's layout.
+  `m_TOS` against the capture's node paths), and its recorded rest rotation that node's in `m_SkeletonPose`.
+- A clip's capture must play the builder's clip: its authored and compiled muscle curves within f32 rounding of
+  the builder's, and its root settings the variant's (anim_muscle_clip). The compiled index array must hold the
+  runtime's layout, every entry owned by its own binding.
 - Each (bone, sample) is compared with reference 2 on the bundle's Avatar, using the capture's recorded
   rotation. A clip's muscle values and their errors come from the compiled curves. The bound comes from the
   frozen rule (`anim_muscle_pose.unity_bound`) at the sample's own values, never from a file.
@@ -218,6 +222,26 @@ def check_tables(case, capture):
     return names
 
 
+def placement(case, info, doc):
+    """The capture's Animator placement in its recorded rest pose: the prefab root at the identity, the Animator
+    node at the case's root (B4's offset placement on a plain chain's offset root, else the identity) and, on a
+    scaled-Animator rig, at its scale."""
+    import anim_fixture_round11 as r11
+
+    feature = r11.RIG_FEATURES.get(info["rig"], ("", 1))[0]
+    placed = r11.OFFSET_PLACEMENT if info["root"] == "offset" and feature == "" else ((0, 0, 0), (0, 0, 0, 1))
+    scale = r11.ANIMATOR_SCALE if feature == "scaled-animator" else 1
+    nodes = {node["address"]: k for k, node in enumerate(doc["spec"]["nodes"])}
+    rest = doc["capture"]["rest"]["transforms"]
+
+    def at(address, translation, rotation, size):
+        row = rest[nodes[address]] if address in nodes and nodes[address] < len(rest) else {}
+        return (r11.same(row.get("translation", ()), translation) and r11.same(row.get("rotation", ()), rotation)
+                and r11.same(row.get("scale", ()), (size,) * 3))
+    replay.require(at("", (0, 0, 0), (0, 0, 0, 1), 1) and at("0", *placed, scale),
+                   f"{case} was recorded at another placement than its {info['root']} root")
+
+
 def observe_capture(editor, case, spec, doc, avatar, clip, seen):
     """One capture's comparisons into `seen`. `spec` is the builder's (kind, rig, variant), `avatar` the bundle's
     Avatar and `clip` its built clip (None for a sweep)."""
@@ -228,7 +252,11 @@ def observe_capture(editor, case, spec, doc, avatar, clip, seen):
     from anim_humanoid_qualify import node_paths, tos_paths, vec
     from anim_reference import angle
 
+    from anim_fixture_contract import check_identity
+
     capture = doc["capture"]
+    check_identity(case, r11.ROUND11_CASES[case], doc["spec"], capture, replay)
+    placement(case, r11.ROUND11_INFO[case], doc)
     names = check_tables(case, capture)
     ids = samples(case, *spec)
     sweep = spec[0] == "probes"
@@ -240,6 +268,7 @@ def observe_capture(editor, case, spec, doc, avatar, clip, seen):
     if not sweep:
         curves = clips.builder_curves(names, spec[1], spec[2])
         clips.check_authored(case, doc, curves, r11.ROUND11_CASES[case].clip)
+        clips.check_root_settings(case, spec[2], clip)
         tracks = clips.compiled_muscles(case, clip, curves, names)
     sampled = {}
     for sample in capture["samples"]:
@@ -268,6 +297,7 @@ def observe_capture(editor, case, spec, doc, avatar, clip, seen):
     skeleton = human["m_Skeleton"].get("data", human["m_Skeleton"])
     bones = capture["humanoid"]["bones"]
     paths, nodes = tos_paths(avatar), node_paths(doc["spec"])
+    pose_rows = human["m_SkeletonPose"].get("data", human["m_SkeletonPose"])["m_X"]
     for bone in sorted({muscle_bone(m) for m in range(MUSCLE_COUNT)}):
         node = bones[bone]["node"]
         if node < 0:
@@ -281,6 +311,9 @@ def observe_capture(editor, case, spec, doc, avatar, clip, seen):
         replay.require(path is not None and nodes.get(node) == path,
                        f"Editor {editor}'s {case} records {bones[bone]['name']} from transform {node} "
                        f"({nodes.get(node)!r}), not the Avatar's {path!r}")
+        replay.require(r11.same(capture["rest"]["transforms"][node]["rotation"],
+                                [float(pose_rows[found]["q"][a]) for a in "xyzw"]),
+                       f"Editor {editor}'s {case} records {bones[bone]['name']} at a rest rotation not the Avatar's")
         record = skeleton["m_AxesArray"][skeleton["m_Node"][found]["m_AxesId"]]
         axes = {key: [pose.f32(v) for v in vec(record[name])] for key, name in
                 (("pre", "m_PreQ"), ("post", "m_PostQ"), ("sign", "m_Sgn"))}

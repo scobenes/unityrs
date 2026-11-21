@@ -22,6 +22,7 @@ import anim_humanoid_qualify as qualify  # noqa: E402
 import anim_muscle_clip as clips  # noqa: E402
 import anim_muscle_confirm as confirm  # noqa: E402
 import anim_muscle_pose as pose  # noqa: E402
+import anim_replay as replay  # noqa: E402
 import scratch  # noqa: E402
 from test_anim_body_fixtures import source  # noqa: E402
 
@@ -29,7 +30,9 @@ SWEEP, CLIP = "body-probes-face", "body-clip-compact-scoped-level"
 VERSIONS = {"2022": "2022.3.62f3", "6000": "6000.6.9f1"}
 BONES = confirm.bone_names()
 SPINE, LEFT_EYE, RIGHT_EYE, LEFT_UPPER_ARM = 7, 21, 22, 13
-NODES = 56  # the root, then HumanBodyBones b at node b + 1, in the capture and the Avatar alike
+NODES = 56  # the Avatar's skeleton: the root, then HumanBodyBones b at node b + 1, path `B<b>`
+CAPTURED = 57  # the capture's nodes: the prefab root, the Animator node, then HumanBodyBones b at node b + 2
+IDENTITY = dict(translation=["00000000"] * 3, rotation=["00000000"] * 3 + ["3f800000"], scale=["3f800000"] * 3)
 
 
 def trait_names():
@@ -62,6 +65,8 @@ def avatar(twist=0.):
              "m_RightHand": {"data": {"m_HandBoneIndex": [40 + k for k in range(15)]}},
              "m_Skeleton": {"m_Node": [{"m_AxesId": -1}, *({"m_AxesId": b} for b in range(55))],
                             "m_ID": list(range(NODES)), "m_AxesArray": records},
+             "m_SkeletonPose": {"m_X": [{"q": dict(zip("xyzw", rest(n - 1) if n else (0, 0, 0, 1)))}
+                                        for n in range(NODES)]},
              **{field: twist for field in qualify.TWIST}}
     return {"m_Avatar": {"m_Human": human}, "m_TOS": [[n, f"B{n - 1}" if n else ""] for n in range(NODES)]}
 
@@ -104,9 +109,16 @@ def built(curves):
         for slot, coefficients in frames[time]:
             words += [slot, *map(word, coefficients)]
     return {"m_ClipBindingConstant": {"genericBindings": bindings},
-            "m_MuscleClip": {"m_IndexArray": index, "m_Clip": {"m_StreamedClip": dict(curveCount=len(bindings),
+            "m_MuscleClip": {**ROOT_SETTINGS, "m_IndexArray": index, "m_Clip": {"m_StreamedClip": dict(curveCount=len(bindings),
                                                                                        data=words),
                                                                "m_DenseClip": {}, "m_ConstantClip": {"data": []}}}}
+
+
+# The level variant's root settings, as the built clip serializes them.
+ROOT_SETTINGS = dict(m_StartAtOrigin=True, m_Mirror=False, m_LoopTime=False, m_LoopBlend=False, m_CycleOffset=0.,
+                     m_LoopBlendOrientation=False, m_LoopBlendPositionY=False, m_LoopBlendPositionXZ=False,
+                     m_KeepOriginalOrientation=False, m_KeepOriginalPositionY=False, m_KeepOriginalPositionXZ=False,
+                     m_HeightFromFeet=False, m_Level=.125, m_OrientationOffsetY=0.)
 
 
 def capture(case, editor, bones=None, turned=(), nodes=None):
@@ -115,7 +127,7 @@ def capture(case, editor, bones=None, turned=(), nodes=None):
     degree off."""
     kind, rig, _ = confirm.b5a_cases()[case]
     recorded = confirm.case_bones(rig) if bones is None else bones
-    nodes = {bone: bone + 1 for bone in recorded} | (nodes or {})
+    nodes = {bone: bone + 2 for bone in recorded} | (nodes or {})
     if kind == "probes":
         points = [(t, [pose.f32(v) for v in vector]) for t, vector in r11.probe_schedule(rig, NAMES, None, case)]
         bindings = []
@@ -127,29 +139,38 @@ def capture(case, editor, bones=None, turned=(), nodes=None):
         bindings = authored(curves)
     rows = []
     for t, vector in points:
-        transforms = [dict(rotation=["00000000"] * 3 + ["3f800000"]) for _ in range(NODES)]
+        transforms = [dict(rotation=["00000000"] * 3 + ["3f800000"]) for _ in range(CAPTURED)]
         for bone in recorded:
             local = pose.bone_rotation(rest(bone), pose.synthetic_axes(bone),
                                        [(vector[m], pose.MUSCLE_AXES[m]) for m in pose.bone_muscles(bone)])
             if bone in turned:
                 local = pose.multiply(local, (math.sin(math.radians(.25)), 0., 0., math.cos(math.radians(.25))))
-            transforms[bone + 1] = dict(rotation=pose.f32_hexes(local))
+            transforms[bone + 2] = dict(rotation=pose.f32_hexes(local))
         row = dict(local=t, effective_source=t, local_f32=confirm.f32_bits(t), pose=dict(transforms=transforms))
         if kind == "probes":
             row["muscles_f32"] = [confirm.f32_bits(v) for v in vector]
         rows.append(row)
+    fixture = r11.ROUND11_CASES[case]
+    folder = "assets/unityrsfixtures/" + fixture.folder + "/"
+    mode = "human_pose" if kind == "probes" else "animator"
     return dict(
-        spec=dict(mode="animator", clip_asset="" if kind == "probes" else "c.anim",
-                  clip_name=r11.ROUND11_CASES[case].clip, binding_address="0",
-                  nodes=[dict(address="0", name="Rig"), *(dict(address=f"0/{n}", name=f"B{n}") for n in range(55))],
-                  bundles=[dict(name=r11.ROUND11_CASES[case].bundle)],
-                  evidence=dict(editor=dict(fixture_case=case, run_id="r" + editor, bindings=bindings))),
-        capture=dict(editor_version=VERSIONS[editor], samples=rows, rest=dict(transforms=[
-            dict(rotation=pose.f32_hexes(rest(n - 1)) if n else ["00000000"] * 3 + ["3f800000"])
-            for n in range(NODES)]), humanoid=dict(
+        spec=dict(mode=mode, prefab_asset=folder + fixture.prefab + ".prefab", clip_asset=folder + fixture.clip + ".anim",
+                  avatar_asset=fixture.avatar, clip_name=fixture.clip, binding_address="0", binding_component=0,
+                  nodes=[dict(address="", name=fixture.prefab), dict(address="0", name="HumanoidRig"),
+                         *(dict(address=f"0/{n}", name=f"B{n}") for n in range(55))],
+                  bundles=[dict(name=fixture.bundle)],
+                  evidence=dict(editor=dict(fixture_case=case, run_id="r" + editor, bindings=bindings,
+                                            animation_source="procedural_humanoid", expected_discovery=""))),
+        capture=dict(editor_version=VERSIONS[editor], samples=rows, playback=dict(api=replay.API[mode],
+                                                                                  clip_human_motion=True),
+                     rest=dict(transforms=[IDENTITY, IDENTITY, *(dict(IDENTITY, rotation=pose.f32_hexes(rest(b)))
+                                                                 for b in range(55))]), humanoid=dict(
                 bones=[dict(name=name, node=nodes[b] if b in recorded else -1) for b, name in enumerate(BONES)],
                 muscles=[dict(name=NAMES[m], bone=qualify.muscle_bone(m), axis=pose.MUSCLE_AXES[m])
                          for m in range(qualify.MUSCLE_COUNT)])))
+
+
+OFF_KEY = "double offKey = keys[i - 1] - start + (keys[i] - keys[i - 1]) * (391.0 / 1024.0);"
 
 
 def recorder_offset(text):
@@ -223,8 +244,8 @@ class ConfirmTests(unittest.TestCase):
         self.assertRegex(found[0], r"^the runs lack 69 in-scope .*: 6000 body-probes-face LeftEye sample")
 
     def test_a_bone_read_from_another_transform_fails(self):
-        doc = capture(SWEEP, "6000", nodes={LEFT_EYE: RIGHT_EYE + 1})
-        with self.assertRaisesRegex(ValueError, r"records LeftEye from transform 23 \('B22'\), not the Avatar's "
+        doc = capture(SWEEP, "6000", nodes={LEFT_EYE: RIGHT_EYE + 2})
+        with self.assertRaisesRegex(ValueError, r"records LeftEye from transform 24 \('B22'\), not the Avatar's "
                                                 r"'B21'"):
             self.run_confirm({("6000", SWEEP): doc})
 
@@ -270,9 +291,14 @@ class ConfirmTests(unittest.TestCase):
 
         def keys(doc, prop="Spine Front-Back"):
             return next(row for row in doc["spec"]["evidence"]["editor"]["bindings"] if row["property"] == prop)["keys"]
-        # A sibling clip of the same bundle filed under this case.
-        with self.assertRaisesRegex(ValueError, "not the builder's 'body-clip-compact-scoped-level'"):
-            self.run_confirm(edited(lambda doc: doc["spec"].update(clip_name="body-clip-compact-scoped-level-x")))
+        # A sibling clip or prefab of the same bundle filed under this case, by asset or by name.
+        folder = "assets/unityrsfixtures/body-clips-compact-scoped/"
+        for field, value, pattern in (
+                ("clip_asset", folder + "body-clip-compact-scoped-keep-o0-y0-xz0.anim", "fixture identity mismatch"),
+                ("prefab_asset", folder + "offset.prefab", "fixture identity mismatch"),
+                ("clip_name", "body-clip-compact-scoped-level-x", "not the builder's 'body-clip-compact-scoped-level'")):
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, pattern):
+                self.run_confirm(edited(lambda doc: doc["spec"].update({field: value})))
         # Authored curves unlike the builder's: a value, an inflated tangent, a dropped curve.
         for change in (lambda doc: keys(doc)[2].update(value_f32=confirm.f32_bits(.4)),
                        lambda doc: keys(doc)[1].update(out_tangent_f32=confirm.f32_bits(8.)),
@@ -289,6 +315,10 @@ class ConfirmTests(unittest.TestCase):
             change(clip)
             return clip
         stream = good["m_MuscleClip"]["m_Clip"]["m_StreamedClip"]["data"]
+
+        def dropped(clip):
+            row = clip["m_ClipBindingConstant"]["genericBindings"].pop()
+            clip["m_MuscleClip"]["m_IndexArray"][row["attribute"]] = -1
         # The first frame's first slot: (slot, c3, c2, c1, c0) after the frame's time and count.
         cases = {"an inflated cubic term": (lambda clip: clip["m_MuscleClip"]["m_Clip"]["m_StreamedClip"]["data"]
                                             .__setitem__(4, word(3.)), "differs from the builder's"),
@@ -296,7 +326,8 @@ class ConfirmTests(unittest.TestCase):
                  "an entry past the storage": (lambda clip: clip["m_MuscleClip"]["m_IndexArray"].__setitem__(
                      42, 10 ** 6), "orphaned or conflicting|other muscles"),
                  "a dropped binding": (lambda clip: clip["m_ClipBindingConstant"]["genericBindings"].pop(),
-                                       "storage does not cover")}
+                                       "no binding of theirs"),
+                 "a dropped binding, its entry cleared": (dropped, "storage does not cover")}
         self.assertEqual(stream[2], 0)
         for label, (change, pattern) in cases.items():
             with self.subTest(label), self.assertRaisesRegex(ValueError, pattern):
@@ -308,6 +339,62 @@ class ConfirmTests(unittest.TestCase):
         spine = NAMES.index("Spine Front-Back")
         self.assertEqual(values[spine], clips.f32(keyed[1] + (keyed[2] - keyed[1]) * (.345458984375 - .25) / .25))
         self.assertGreater(errors[spine], 0)
+
+    def test_the_placement_is_the_cases(self):
+        # An offset case recorded on the identity prefab's placement fails, though clip, Avatar and paths agree.
+        offset = CLIP + "-offset"
+        info = r11.ROUND11_INFO[offset]
+        self.assertEqual((info["root"], r11.ROUND11_INFO[CLIP]["root"]), ("offset", "identity"))
+        doc = copy.deepcopy(self.docs["2022", CLIP])
+        with self.assertRaisesRegex(ValueError, "another placement than its offset root"):
+            confirm.placement(offset, info, doc)
+        translation, rotation = r11.OFFSET_PLACEMENT
+        doc["capture"]["rest"]["transforms"][1] = dict(IDENTITY, translation=pose.f32_hexes(translation),
+                                                       rotation=pose.f32_hexes(rotation))
+        confirm.placement(offset, info, doc)
+        with self.assertRaisesRegex(ValueError, "another placement than its identity root"):
+            self.run_confirm({("2022", CLIP): doc})
+
+    def test_a_bone_filled_from_another_fails_by_its_rest(self):
+        # Another bone's rows at this bone's transform: its rest rotation is not the Avatar's for this bone.
+        doc = copy.deepcopy(self.docs["6000", SWEEP])
+        rows = doc["capture"]["rest"]["transforms"]
+        rows[LEFT_EYE + 2] = rows[RIGHT_EYE + 2]
+        with self.assertRaisesRegex(ValueError, "records LeftEye at a rest rotation not the Avatar's"):
+            self.run_confirm({("6000", SWEEP): doc})
+
+    def test_the_variants_root_settings(self):
+        # level and keep-o0-y0-xz0 share their muscle curves; the root settings tell them apart.
+        for key, value in (("m_Level", 0.), ("m_KeepOriginalPositionY", True), ("m_LoopTime", True)):
+            clip = built(builder_curves())
+            clip["m_MuscleClip"][key] = value
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, "root settings|settings B4 reads"):
+                self.run_confirm(clip=clip)
+
+    def test_every_index_entry_is_owned(self):
+        # As clip.rs: an entry other than -1 must be its own DOF's binding's slot, an unbound DOF's included.
+        for dof, slot in ((199, 0), (7, 1), (42, -2)):
+            clip = built(builder_curves())
+            clip["m_MuscleClip"]["m_IndexArray"][dof] = slot
+            with self.subTest(dof=dof), self.assertRaisesRegex(ValueError, "orphaned or conflicting|no binding of theirs"):
+                self.run_confirm(clip=clip)
+
+    def test_every_dense_frame_is_the_builders(self):
+        times, values = builder_curves()["Spine Front-Back"]
+        frames = [k / 60 for k in range(61)]
+
+        def polyline(t):
+            for (t0, v0), (t1, v1) in zip(zip(times, values), zip(times[1:], values[1:])):
+                if t0 <= t <= t1:
+                    return v0 + (t - t0) / (t1 - t0) * (v1 - v0)
+        dense = [(t, (0., 0., 0., clips.f32(polyline(t)))) for t in frames]
+        self.assertTrue(clips.check_track((False, dense), times, values))
+        # One wrong frame near the 0.0955 off-key sample, between the keys and midpoints, fails.
+        wrong = list(dense)
+        wrong[6] = (frames[6], (0., 0., 0., dense[6][1][3] + .01))
+        self.assertFalse(clips.check_track((False, wrong), times, values))
+        # Frames that stop short of the last key fail too.
+        self.assertFalse(clips.check_track((False, dense[:-1]), times, values))
 
     def test_a_forged_case_file_cannot_pass(self):
         # confirm reads run folders, never a case file: one claiming both Editors and every sample is refused as
@@ -348,6 +435,9 @@ class ConfirmTests(unittest.TestCase):
         recording = source("UnityrsFixtureRecording.cs")
         self.assertEqual(recorder_offset(recording), confirm.RECORDER_OFFSET)
         self.assertIn("double start = keys[0], length = keys[keys.Length - 1] - start;", recording)
+        # Each off-key sample is based at its interval's first key.
+        self.assertIn(OFF_KEY, recording)
+        self.assertNotIn(OFF_KEY, recording.replace("keys[i - 1] - start + (keys[i]", "keys[i] - start + (keys[i]"))
         self.assertIn("s.startTime == 0 && s.stopTime == 1", source("UnityrsBodyClips.cs"))
         # A drifted recorder fails the check, and its schedule is not the expected one.
         drifted = recording.replace("(391.0 / 1024.0)", "(400.0 / 1024.0)")
