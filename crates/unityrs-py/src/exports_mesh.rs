@@ -133,8 +133,10 @@ fn names(input: Option<&Bound<'_, PyAny>>, meter: &Arc<Meter>) -> PyResult<Meter
             meter.count_decode(count as u64).map_err(errors::charge)?;
             out.reserve(count).map_err(errors::charge)?;
             for i in 0..count {
-                let value =
-                    crate::buffer_snapshot::BufferSnapshot::new(&input.get_item(i)?, meter)?;
+                let value = crate::buffer_snapshot::BufferSnapshot::new(
+                    &crate::python::held::item(input, i)?,
+                    meter,
+                )?;
                 out.push(RawStr::charged(&value, meter).map_err(errors::charge)?)
                     .map_err(errors::charge)?;
             }
@@ -234,7 +236,7 @@ fn resolved_names(
     meter.count_decode(count as u64).map_err(errors::charge)?;
     let mut out = MeteredVec::with_capacity(meter, count).map_err(errors::charge)?;
     for i in 0..count {
-        let row = input.get_item(i)?;
+        let row = crate::python::held::item(input, i)?;
         let key = crate::buffer_snapshot::BufferSnapshot::new(&row.get_item(0)?, meter)?;
         let name = crate::buffer_snapshot::BufferSnapshot::new(&row.get_item(1)?, meter)?;
         out.push((

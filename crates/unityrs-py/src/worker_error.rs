@@ -111,7 +111,7 @@ impl Failure {
             Self::Parse(error, boost) => crate::errors::parse_reader(&error, boost),
             Self::Static(name, text) => crate::exports::named_error(name, text),
             Self::Message(name, text) => crate::exports::named_error(name, &text),
-            Self::Integer(error) => crate::errors::new::<pyo3::exceptions::PyOverflowError>(
+            Self::Integer(error) => crate::errors::new::<pyo3::exceptions::PyValueError>(
                 &crate::errors::message(&error),
             ),
         }

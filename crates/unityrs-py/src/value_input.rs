@@ -384,14 +384,17 @@ impl State<'_> {
             let attrs = if dict {
                 None
             } else {
-                optional_attr(value.get_type().as_any(), "__attrs_attrs__")?
-                    .map(|fields| fields.try_iter().map(Bound::unbind))
-                    .transpose()?
+                optional_attr(
+                    value.get_type().as_any(),
+                    name!(value.py(), c"__attrs_attrs__")?,
+                )?
+                .map(|fields| fields.try_iter().map(Bound::unbind))
+                .transpose()?
             };
             let keys = if dict {
                 Some(value.try_iter()?.unbind())
             } else {
-                optional_attr(value, "__dict__")?
+                optional_attr(value, name!(value.py(), c"__dict__")?)?
                     .map(|d| d.try_iter().map(Bound::unbind))
                     .transpose()?
             };
@@ -480,9 +483,10 @@ fn next_item(iter: &Elements, index: usize) -> PyResult<Option<Py<PyAny>>> {
     })
 }
 
+/// `value.name`, `None` where it is absent; `name` interned (`name!`).
 fn optional_attr<'py>(
     value: &Bound<'py, PyAny>,
-    name: &str,
+    name: &Bound<'py, PyString>,
 ) -> PyResult<Option<Bound<'py, PyAny>>> {
     match value.getattr(name) {
         Ok(value) => Ok(Some(value)),

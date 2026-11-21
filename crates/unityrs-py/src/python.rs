@@ -198,6 +198,11 @@ pub(crate) mod held {
     pub(crate) fn char(py: Python<'_>, value: char) -> PyResult<Bound<'_, PyAny>> {
         string(py, value.encode_utf8(&mut [0; 4]).as_bytes())
     }
+    /// `seq[at]`, the index's `int` made fallibly (PyO3 boxes a Rust
+    /// integer with a constructor that panics on a failed allocation).
+    pub(crate) fn item<'py>(seq: &Bound<'py, PyAny>, at: usize) -> PyResult<Bound<'py, PyAny>> {
+        seq.get_item(uint(seq.py(), at as u64)?)
+    }
     pub(crate) fn none(py: Python<'_>) -> Bound<'_, PyAny> {
         py.None().into_bound(py)
     }

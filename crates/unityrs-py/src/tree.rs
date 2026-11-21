@@ -148,7 +148,11 @@ pub(crate) fn compile_rows_with(
         let Some((mut row, ty, name)) = row else {
             break;
         };
-        let depth = u64::try_from(row.level)?.saturating_add(1);
+        // Checked here: a negative level raises PyO3's `ValueError`, its
+        // message made fallibly.
+        let depth = u64::try_from(row.level)
+            .map_err(errors::narrowing)?
+            .saturating_add(1);
         let bytes = ty.bound().saturating_add(name.bound());
         // Retain a conservative allowance for the Python iterator's path,
         // active identities and current tuple before asking for another row.

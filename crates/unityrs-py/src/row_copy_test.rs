@@ -8,6 +8,7 @@ use std::{
 
 thread_local! {
     static CORE_ARMED: RefCell<Option<Arc<State>>> = const { RefCell::new(None) };
+    static DECODE_ARMED: RefCell<Option<Arc<State>>> = const { RefCell::new(None) };
     static VALUE_ARMED: RefCell<Option<Arc<State>>> = const { RefCell::new(None) };
     static ARMED: RefCell<Option<Arc<State>>> = const { RefCell::new(None) };
 }
@@ -66,10 +67,16 @@ impl RowCopyBarrier {
         VALUE_ARMED.with(|armed| *armed.borrow_mut() = Some(self.0.clone()));
     }
 
-    /// The next read's core call, as it starts detached
+    /// The next read's tree compilation, as it starts detached
     /// ([`before_core`]), waits for Python's acknowledgement.
     fn arm_core(&self) {
         CORE_ARMED.with(|armed| *armed.borrow_mut() = Some(self.0.clone()));
+    }
+
+    /// The next full-path read's value decode, as it starts detached
+    /// ([`before_decode`]), waits for Python's acknowledgement.
+    fn arm_decode(&self) {
+        DECODE_ARMED.with(|armed| *armed.borrow_mut() = Some(self.0.clone()));
     }
 
     fn wait_for_copy(&self, py: Python<'_>) -> PyResult<()> {
@@ -97,12 +104,18 @@ pub(crate) fn before_value() -> PyResult<()> {
     handshake(&VALUE_ARMED)
 }
 
-/// A read's core call, detached: armed ([`RowCopyBarrier::arm_core`]), it
-/// waits for another Python thread to run and acknowledge, which that
-/// thread can do only while this call leaves the GIL released; held, the
-/// wait times out and the read raises.
+/// A read's tree compilation, detached: armed
+/// ([`RowCopyBarrier::arm_core`]), it waits for another Python thread to
+/// run and acknowledge, which that thread can do only while this call
+/// leaves the GIL released; held, the wait times out and the read raises.
 pub(crate) fn before_core() -> PyResult<()> {
     handshake(&CORE_ARMED)
+}
+
+/// A full-path read's value decode, detached, as [`before_core`]
+/// ([`RowCopyBarrier::arm_decode`]): a decode holding the GIL fails it.
+pub(crate) fn before_decode() -> PyResult<()> {
+    handshake(&DECODE_ARMED)
 }
 
 fn handshake(cell: &'static std::thread::LocalKey<RefCell<Option<Arc<State>>>>) -> PyResult<()> {

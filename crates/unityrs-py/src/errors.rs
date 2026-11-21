@@ -67,9 +67,11 @@ pub(crate) fn text_of<'py>(py: Python<'py>, text: &str) -> PyResult<Bound<'py, P
 }
 
 /// The `MemoryError` a failed allocation set, taken; with none pending, a
-/// `MemoryError` whose raising allocates nothing of ours (its argument is
-/// the interpreter's empty tuple, its instance from the interpreter's
-/// preallocated ones).
+/// `MemoryError` whose raising allocates nothing of ours: its argument is
+/// the interpreter's cached empty tuple. Its instance comes from `CPython`'s
+/// `MemoryError` free list, which is finite: once those preallocated
+/// instances are all in use, `CPython` allocates a new one, and if that fails
+/// too, `CPython` raises its own `MemoryError`, never a panic.
 pub(crate) fn no_memory(py: Python<'_>) -> PyErr {
     PyErr::take(py).unwrap_or_else(|| PyMemoryError::new_err(()))
 }
@@ -83,6 +85,13 @@ pub(crate) fn class_named<'py>(
     let module = text_of(py, module)?.cast_into::<pyo3::types::PyString>()?;
     let name = text_of(py, name)?.cast_into::<pyo3::types::PyString>()?;
     class_of(py, &module, &name)
+}
+
+/// A failed integer narrowing as PyO3 maps it (`ValueError` with the
+/// error's text), its message made now ([`new`]).
+#[allow(clippy::needless_pass_by_value, reason = "used as a map_err function")]
+pub(crate) fn narrowing(error: std::num::TryFromIntError) -> PyErr {
+    new::<PyValueError>(message(&error))
 }
 
 /// A module's class by interned names (`struct.error`).
