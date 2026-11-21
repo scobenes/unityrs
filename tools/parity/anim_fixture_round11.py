@@ -477,13 +477,37 @@ def check_inventory(folder, replay):
     replay.require(not unrecorded, f"round 11 body cases not recorded ({len(unrecorded)}): " + ", ".join(unrecorded))
 
 
-def complete_round(folder, unityrs, inspect_dir, replay):
-    """Complete a round 11 run: its inventory, then every check `complete` runs, with round 11's tables."""
+def complete_round(folder, unityrs, inspect_dir, replay, intake_digest=None):
+    """Complete a round 11 run: its inventory, then every check `complete` runs, with round 11's tables. Round 12
+    reuses some round 11 cases as sealed evidence (anim_fixture_round12.round11_cases: the finger and face sweeps
+    and B5a's refusal clips); they stay unread and undecoded, listed as held, unless `intake_digest` names a round
+    12 intake whose claim exists (anim_twist_seal.require_claim). Returns (count, uncovered, sealed, held)."""
     import anim_replay_complete as complete
+    from anim_fixture_round12 import round11_cases
 
     check_inventory(folder, replay)
+    if intake_digest is not None:
+        from anim_twist_seal import require_claim
+
+        require_claim(intake_digest)
+        held = set()
+    else:
+        held = {case for case, partition in round11_cases().items() if partition != "exploration"}
+    base, skipped = complete.recorded_paths, []
+
+    def gated(*args):
+        paths, mixed, run, uncovered = base(*args)
+        kept = [path for path in paths if not (path.parent.name == "body"
+                                               and path.name.removesuffix(".pending.json") in held)]
+        skipped[:] = sorted(path.name.removesuffix(".pending.json") for path in paths if path not in kept)
+        return kept, mixed, run, uncovered
     with round11_tables():
-        return complete.complete_folder(folder, unityrs, inspect_dir, replay)
+        complete.recorded_paths = gated
+        try:
+            count, uncovered, sealed = complete.complete_folder(folder, unityrs, inspect_dir, replay)
+        finally:
+            complete.recorded_paths = base
+    return count, uncovered, sealed, skipped
 
 
 def main():
@@ -498,7 +522,7 @@ def main():
 
     executable = str(Path(args.unityrs).resolve()) if args.unityrs else "unityrs"
     try:
-        count, uncovered, sealed = complete_round(args.folder, executable, args.inspect_dir, anim_replay)
+        count, uncovered, sealed, held = complete_round(args.folder, executable, args.inspect_dir, anim_replay)
     except (ValueError, OSError, OverflowError) as exc:
         parser.exit(1, f"anim_fixture_round11: {exc}\n")
     print(f"Completed and validated {count} replay(s) of round {ROUND}.")
@@ -506,6 +530,8 @@ def main():
         print(f"Optional coverage not recorded: {row}")
     for name in sealed:
         print(f"Sealed hold-out case, not opened: {name} (only E3b unseals it: anim_body_freeze.py e3b)")
+    for name in held:
+        print(f"Round 12 sealed evidence, not opened: {name} (only the round 12 seal opens it: anim_twist_seal.py)")
 
 
 if __name__ == "__main__":

@@ -23,7 +23,7 @@ round 11's builder tables, never from literals:
 **Observed** (`observe`): what the run folders recorded, from their raw captures and bundles.
 - Each run must declare round 11 and record its whole body inventory (anim_fixture_round11.check_inventory).
 - Each capture's own metadata names its case, run, Editor and bundle (anim_muscle_round11.Recordings), and
-  each opens only through the round 12 allowlist (anim_fixture_round12.View).
+  each opens lazily through a view (anim_fixture_round12.View), round 11's own by default.
 - A sample is identified as above, its time from the same source time the prediction and bound use (one
   whose recorded local time disagrees is refused). A sweep's must be one of the builder's vectors, at its time
   and with its values, and a clip's must be one of the schedule's times. A sample recorded twice is refused.
@@ -337,8 +337,7 @@ def observe_capture(editor, case, spec, doc, avatar, clip, seen):
 
 def observe(folders, avatar_of, clip_of, cases=None, view_of=None):
     """The round 11 runs' comparisons, through `avatar_of` and `clip_of` (anim_body_freeze.readers). Each run's
-    captures open through `view_of(folder)`, the round 12 allowlist (anim_fixture_round12.View): by default its
-    exploration view, which refuses B5a's sealed cases until the round 12 intake's claim."""
+    captures open lazily through `view_of(folder)` (anim_fixture_round12.View), by default round 11's own view."""
     import anim_fixture_round11 as r11
     import anim_muscle_round11 as round11
 

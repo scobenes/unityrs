@@ -1,25 +1,58 @@
-"""Round 12's seal (anim_twist_seal): the freeze record, the one claim per intake digest, and the verdicts behind the
-allowlist: the `none` path keeps B5a, any sealed twist failure refuses all twist, and a second claim, a wrong
-intake or bytes changed after the claim fail closed."""
+"""Round 12's seal (anim_twist_seal): the freeze record with its pinned hooks and reader, the one claim per intake
+digest and its recovery, and the verdicts behind the allowlist: B5a computed and recorded on its own before
+twist, the `none` path keeps B5a, any sealed twist failure refuses all twist, and a second claim, a wrong intake
+or bytes changed after the claim fail closed."""
 
+import hashlib
+import inspect
+import io
 import json
+import sys
+import tarfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 import test_anim_replay_coverage  # noqa: F401  (puts tools/parity on the path)
 
+import anim_body_seal  # noqa: E402
 import anim_fixture_round12 as round12  # noqa: E402
+import anim_twist_b5a as b5a  # noqa: E402
 import anim_twist_model as model  # noqa: E402
 import anim_twist_seal as seal  # noqa: E402
 import scratch  # noqa: E402
-from test_anim_fixture_round12 import EXPLORATION, TWIN, VERSIONS, Runs, observation, rows, write_json  # noqa: E402
+from test_anim_fixture_round12 import EXPLORATION, TWIN, TWIST_CLIP, VERSIONS, Runs, readers, rows, write_json  # noqa: E402
+from test_anim_twist_b5a import observation  # noqa: E402
 
 CANDIDATE = dict(limb=list(model.LIMBS[0]), foot=list(model.FEET[0]))
+HOOK_MODULE = "round12_test_hooks"
+HOOKS = dict(observe_b5a=f"{HOOK_MODULE}:observe", twist_rule=f"{HOOK_MODULE}:rule")
+# The hook module the tests freeze: it forwards to the running test (CURRENT), as a frozen module would compute.
+HOOK_SOURCE = f"""import sys
+
+
+def observe(views, unityrs):
+    return sys.modules[{__name__!r}].CURRENT.observer(views, unityrs)
+
+
+def rule(candidate, views, unityrs):
+    return sys.modules[{__name__!r}].CURRENT.rule(candidate, views, unityrs)
+"""
+CURRENT = None
 
 
 def ledger(path):
     return [json.loads(line) for line in (path / "ledger.jsonl").read_text(encoding="utf-8").splitlines()]
+
+
+def hook_top(case):
+    """(a checkout top holding the hook module, the freeze's `code` pinning it)."""
+    top = scratch.for_case(case)
+    path = top / "tools" / "parity" / f"{HOOK_MODULE}.py"
+    path.parent.mkdir(parents=True)
+    path.write_text(HOOK_SOURCE, encoding="utf-8")
+    name = f"tools/parity/{HOOK_MODULE}.py"
+    return top, dict(commit="c" * 40, files=[name], sha256={name: hashlib.sha256(path.read_bytes()).hexdigest()})
 
 
 class ClaimTests(unittest.TestCase):
@@ -30,8 +63,11 @@ class ClaimTests(unittest.TestCase):
             seal.require_claim(digest, folder)
         seal.claim(digest, folder)
         seal.require_claim(digest, folder)
+        self.assertEqual(json.loads((folder / f"{digest}.claim").read_text())["state"], "claimed")
         with self.assertRaisesRegex(ValueError, "already evaluated"):
             seal.claim(digest, folder)
+        seal.mark(digest, "b5a", folder)
+        seal.require_claim(digest, folder)
         # The claim is the intake's own: another intake's is separate.
         with self.assertRaisesRegex(ValueError, "opens only after"):
             seal.require_claim(other, folder)
@@ -39,89 +75,203 @@ class ClaimTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 seal.claim(bad, folder)
 
+    def test_a_claim_half_written_by_a_crash_refuses_and_is_never_reclaimed(self):
+        folder = scratch.for_case(self)
+        digest = "c" * 64
+
+        def dies(handle, data):
+            raise KeyboardInterrupt("the process dies mid-claim")
+        with mock.patch.object(seal.os, "write", dies), self.assertRaises(KeyboardInterrupt):
+            seal.claim(digest, folder)
+        self.assertTrue((folder / f"{digest}.claim").is_file())
+        with self.assertRaisesRegex(ValueError, "half-written"):
+            seal.require_claim(digest, folder)
+        with self.assertRaisesRegex(ValueError, "half-written"):
+            seal.claim(digest, folder)
+        with self.assertRaisesRegex(ValueError, "half-written"):
+            seal.mark(digest, "failed", folder)
+        # A marker holding another intake's state, or a truncated one, is half-written too.
+        (folder / f"{digest}.claim").write_text('{"intake_digest": "' + digest + '", "sta', encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "half-written"):
+            seal.require_claim(digest, folder)
+
 
 class FreezeTests(unittest.TestCase):
     def test_the_pinned_files(self):
-        files = seal.pinned_files()
+        files = seal.pinned_files(hooks=dict(observe_b5a="anim_twist_b5a:b5a_failures", twist_rule=None))
         for name in ("tools/parity/anim_twist_model.py", "tools/parity/anim_twist_bound.py",
                      "tools/parity/anim_muscle_pose.py", "tools/parity/anim_fixture_round12.py",
-                     "tools/parity/anim_twist_seal.py", "tools/parity/anim_round12_tables.py",
-                     "crates/unityrs-anim/src/humanoid/muscle_pose.rs", "crates/unityrs-anim/src/humanoid/mod.rs",
-                     *seal.DATA):
+                     "tools/parity/anim_twist_seal.py", "tools/parity/anim_twist_b5a.py",
+                     "tools/parity/anim_round12_tables.py", "crates/unityrs-anim/src/humanoid/muscle_pose.rs",
+                     "crates/unityrs-anim/src/humanoid/mod.rs", *seal.DATA):
             self.assertIn(name, files)
         self.assertNotIn(f"tools/parity/{seal.FREEZE_PATH.name}", files)
         self.assertEqual(files, sorted(set(files)))
         self.assertTrue(all((seal.TOP / name).is_file() for name in files))
+        for hooks in (dict(other="m:f"), dict(observe_b5a="../m:f"), dict(observe_b5a="m")):
+            with self.subTest(hooks=hooks), self.assertRaises(ValueError):
+                seal.pinned_files(hooks=hooks)
 
     def test_the_record(self):
-        folder = scratch.for_case(self)
-        unityrs = folder / "unityrs"
-        unityrs.write_bytes(b"reader")
-        with mock.patch.object(seal, "code_state", return_value=("c" * 40, ["f"], "d" * 64)):
-            record = seal.make_freeze("e" * 64, "none", str(unityrs), seal.REASONS[0])
-            self.assertEqual(seal.make_freeze("e" * 64, CANDIDATE, str(unityrs))["candidate"], CANDIDATE)
-            for candidate, reason, pattern in (("none", None, "names one of"), (CANDIDATE, seal.REASONS[0], "only it"),
-                                               ("none", "tired", "names one of"),
-                                               (dict(limb=[9, 9, 9, "+", 0], foot=[1, 0]), None, "candidates"),
-                                               ("best", None, "no candidate")):
-                with self.subTest(candidate=candidate, reason=reason), self.assertRaisesRegex(ValueError, pattern):
-                    seal.make_freeze("e" * 64, candidate, str(unityrs), reason)
+        top, code = hook_top(self)
+        reader = dict(sha256="d" * 64, commit=code["commit"], command=list(seal.READER_BUILD), remap="r")
+        with mock.patch.object(seal, "code_state", return_value=code), \
+                mock.patch.object(seal, "build_reader", return_value=reader) as built:
+            record = seal.make_freeze("e" * 64, "none", dict(observe_b5a=HOOKS["observe_b5a"]), top / "u",
+                                      seal.REASONS[0], top)
+            self.assertEqual(built.call_args.args[:2], (code["commit"], top / "u"))
+            self.assertEqual(seal.make_freeze("e" * 64, CANDIDATE, HOOKS, top / "u", top=top)["candidate"], CANDIDATE)
+            for candidate, reason, hooks, pattern in (
+                    ("none", None, HOOKS, "names one of"), (CANDIDATE, seal.REASONS[0], HOOKS, "only it"),
+                    ("none", "tired", HOOKS, "names one of"),
+                    (dict(limb=[9, 9, 9, "+", 0], foot=[1, 0]), None, HOOKS, "candidates"),
+                    ("best", None, HOOKS, "no candidate"), (CANDIDATE, None, dict(observe_b5a=HOOKS["observe_b5a"]),
+                                                            "twist rule unless"),
+                    ("none", seal.REASONS[0], {}, "names B5a's observer"),
+                    ("none", seal.REASONS[0], dict(observe_b5a=f"{HOOK_MODULE}:absent"), "not a function")):
+                with self.subTest(candidate=candidate, reason=reason, pattern=pattern), \
+                        self.assertRaisesRegex(ValueError, pattern):
+                    seal.make_freeze("e" * 64, candidate, hooks, top / "u", reason, top)
             with self.assertRaisesRegex(ValueError, "intake digest"):
-                seal.make_freeze("e", "none", str(unityrs), seal.REASONS[0])
-        self.assertEqual(record["b5a"]["pinned"], round12.pinned_refusals())
-        self.assertEqual(record["verdict"], seal.VERDICT)
-        path = folder / "freeze.json"
+                seal.make_freeze("e", "none", HOOKS, top / "u", seal.REASONS[0], top)
+        self.assertEqual(record["b5a"]["pinned"], b5a.pinned_refusals())
+        self.assertEqual((record["verdict"], record["reader"], record["hooks"]),
+                         (seal.VERDICT, reader, dict(observe_b5a=HOOKS["observe_b5a"], twist_rule=None)))
+        path = top / "freeze.json"
         found = seal.write_freeze(record, path)
         self.assertEqual(seal.read_freeze(path.read_bytes()), record)
         self.assertEqual(len(found), 64)
         with self.assertRaisesRegex(ValueError, "written once"):
             seal.write_freeze(record, path)
-        for change in (dict(format="other"), dict(reason=None), dict(candidate=CANDIDATE), dict(extra=1)):
+        for change in (dict(format="other"), dict(reason=None), dict(candidate=CANDIDATE), dict(extra=1),
+                       dict(hooks=dict(observe_b5a=None, twist_rule=None))):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 seal.read_freeze(json.dumps(record | change).encode())
         # Only the canonical freeze path is read.
         with self.assertRaisesRegex(ValueError, "canonical freeze"):
             seal.canonical(path)
 
+    def test_hooks_load_only_from_the_pinned_bytes(self):
+        top, code = hook_top(self)
+        freeze = dict(hooks=HOOKS, code=code)
+        self.assertEqual(seal.load_hook(freeze, "observe_b5a", top).__name__, "observe")
+        self.assertIsNone(seal.load_hook(dict(hooks=dict(twist_rule=None), code=code), "twist_rule", top))
+        # No callable is taken from a caller: only names, loaded from the pinned module.
+        self.assertFalse({"observe_b5a", "twist_rule"} & set(inspect.signature(seal.evaluate_bound).parameters))
+        for hooks, pattern in ((dict(observe_b5a="anim_twist_b5a:b5a_failures"), "not in a pinned module"),
+                               (dict(observe_b5a=print), "not a pinned module:function")):
+            with self.subTest(pattern=pattern), self.assertRaisesRegex(ValueError, pattern):
+                seal.load_hook(dict(hooks=hooks, code=code), "observe_b5a", top)
+        path = top / code["files"][0]
+        path.write_text(HOOK_SOURCE + "\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "changed"):
+            seal.load_hook(freeze, "observe_b5a", top)
+
+    def test_the_reader_is_built_from_the_pinned_commit(self):
+        top = scratch.for_case(self)
+        archive = io.BytesIO()
+        with tarfile.open(fileobj=archive, mode="w") as tar:
+            info = tarfile.TarInfo("Cargo.toml")
+            tar.addfile(info, io.BytesIO(b""))
+        runs = []
+
+        def run(args, **kwargs):
+            runs.append((args, kwargs))
+            if args[0] == "git":
+                return mock.Mock(returncode=0, stdout=archive.getvalue())
+            target = Path(kwargs["env"]["CARGO_TARGET_DIR"]) / "release"
+            target.mkdir(parents=True)
+            (target / "unityrs").write_bytes(b"built")
+            return mock.Mock(returncode=0, stderr="")
+        with mock.patch("child.run", run):
+            found = seal.build_reader("f" * 40, top / "unityrs", top)
+        self.assertEqual(found["sha256"], hashlib.sha256(b"built").hexdigest())
+        self.assertEqual((found["commit"], found["command"]), ("f" * 40, list(seal.READER_BUILD)))
+        self.assertEqual(runs[0][0][-1], "f" * 40)
+        self.assertEqual((runs[1][0], (Path(runs[1][1]["cwd"]) / "Cargo.toml").name), (list(seal.READER_BUILD),
+                                                                                         "Cargo.toml"))
+        self.assertIn("--remap-path-prefix=", runs[1][1]["env"]["RUSTFLAGS"])
+        self.assertEqual((top / "unityrs").read_bytes(), b"built")
+
+    def test_binding_refuses_an_executable_not_built_from_the_pinned_commit(self):
+        top, code = hook_top(self)
+        unityrs = top / "unityrs"
+        unityrs.write_bytes(b"stale")
+        record = dict(format=seal.FORMAT, version=1, intake_digest="e" * 64, candidate="none",
+                      reason=seal.REASONS[0], hooks=dict(observe_b5a=HOOKS["observe_b5a"], twist_rule=None),
+                      code=code, reader=dict(sha256=hashlib.sha256(b"built").hexdigest(), commit=code["commit"],
+                                             command=list(seal.READER_BUILD), remap="r"),
+                      editors=sorted(VERSIONS), verdict=seal.VERDICT, b5a=seal.b5a_pins())
+        path = top / "freeze.json"
+        path.write_text(json.dumps(record), encoding="utf-8")
+        with mock.patch.object(seal, "canonical"), mock.patch.object(anim_body_seal, "bind_artifact"), \
+                mock.patch.object(anim_body_seal, "code_history"), \
+                mock.patch.object(seal, "pinned_files", return_value=code["files"]):
+            with self.assertRaisesRegex(ValueError, "not the one built from the pinned commit"):
+                seal.bind(path, str(unityrs), top)
+            unityrs.write_bytes(b"built")
+            self.assertEqual(seal.bind(path, str(unityrs), top)[0], record)
+
 
 class EvaluateTests(Runs, unittest.TestCase):
     def freeze(self, digest, candidate="none"):
-        return dict(intake_digest=digest, candidate=candidate, reason=seal.REASONS[0] if candidate == "none" else None)
+        hooks = dict(HOOKS, twist_rule=None) if candidate == "none" else HOOKS
+        return dict(intake_digest=digest, candidate=candidate, reason=seal.REASONS[0] if candidate == "none" else None,
+                    hooks=hooks, code=self.code)
 
     def setUp(self):
+        global CURRENT
         super().setUp()
         self.r12, self.r11 = self.runs()
         self.digest, _ = self.intake(self.r12, self.r11)
         self.ledger = scratch.for_case(self)
+        self.top, self.code = hook_top(self)
         rows_ = {(e, TWIN, 7, sid) for e in VERSIONS for sid in rows()[TWIN]["times"][:1]}
-        case = sorted(round12.pinned_refusals())[0]
-        self.refused = {(e, case, 7, "00000000"): "unsupported_humanoid_limb_twist(23)" for e in VERSIONS}
+        case = sorted(b5a.pinned_refusals())[0]
+        self.refused = {(e, case, 7, "00000000"): b5a.pinned_refusals()[case] for e in VERSIONS}
         self.expected = (rows_, set(self.refused))
         self.seen = observation(rows_, self.refused)
+        self.rule = None
+        CURRENT = self
+        self.addCleanup(setattr, sys.modules[__name__], "CURRENT", None)
 
     def observe(self, views, unityrs):
         """B5a's observation, reading a sealed twin through each Editor's round 12 view."""
         for editor, kind, view in views:
             if kind == "round12":
-                round12.complete(view, [TWIN])
+                round12.complete(view, readers(), [TWIN])
         return self.seen
 
     def evaluate(self, freeze, rule=None, observe=None):
         def never(*_):
             raise AssertionError("the twist rule ran")
+        self.rule, self.observer = rule or never, observe or self.observe
         return seal.evaluate_bound(freeze, list(self.r12.values()), list(self.r11.values()), "unityrs",
-                                   observe or self.observe, rule or never, self.ledger, self.expected)
+                                   self.ledger, self.expected, self.top)
+
+    def events(self):
+        return [row["event"] for row in ledger(self.ledger)]
 
     def test_the_none_path_refuses_twist_and_keeps_b5a(self):
         report = self.evaluate(self.freeze(self.digest))
         self.assertEqual(report["b5a"], dict(passed=True, failures=[]))
         self.assertEqual(report["twist"]["admitted"], "none")
         self.assertIn("the freeze is none", report["twist"]["failures"][0])
-        self.assertEqual([row["event"] for row in ledger(self.ledger)], ["claimed", "evaluated"])
+        self.assertEqual(self.events(), ["claimed", "b5a", "evaluated"])
         # A failing B5a is reported on the none path too.
         self.setUp()
         self.seen.rows.popitem()
         self.assertFalse(self.evaluate(self.freeze(self.digest))["b5a"]["passed"])
+
+    def test_b5a_is_recorded_before_twist_begins(self):
+        def rule(candidate, views, unityrs):
+            self.assertEqual(self.events(), ["claimed", "b5a"])
+            self.assertEqual(json.loads((self.ledger / f"{self.digest}.claim").read_text())["state"], "b5a")
+            raise ValueError("twist dies")
+        report = self.evaluate(self.freeze(self.digest, CANDIDATE), rule)
+        self.assertTrue(report["b5a"]["passed"])
+        self.assertEqual(ledger(self.ledger)[1]["passed"], True)
+        self.assertEqual(json.loads((self.ledger / f"{self.digest}.claim").read_text())["state"], "evaluated")
 
     def test_any_sealed_twist_failure_refuses_all_twist(self):
         def raises(*_):
@@ -160,8 +310,8 @@ class EvaluateTests(Runs, unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not the frozen intake's"):
             self.evaluate(self.freeze("0" * 64))
         self.assertFalse(list(Path(self.ledger).iterdir()))
-        # A run swapped for another after the freeze changes the intake.
-        (self.r12["6000"] / "build.log").write_text("rebuilt\n", encoding="utf-8")
+        # A run's file rewritten after the freeze changes the intake.
+        (self.r12["6000"] / "authored.json").write_bytes((self.r12["6000"] / "authored.json").read_bytes() + b" ")
         with self.assertRaisesRegex(ValueError, "not the frozen intake's"):
             self.evaluate(self.freeze(self.digest))
 
@@ -169,30 +319,46 @@ class EvaluateTests(Runs, unittest.TestCase):
         self.evaluate(self.freeze(self.digest))
         with self.assertRaisesRegex(ValueError, "already evaluated"):
             self.evaluate(self.freeze(self.digest))
-        self.assertEqual([row["event"] for row in ledger(self.ledger)], ["claimed", "evaluated"])
+        self.assertEqual(self.events(), ["claimed", "b5a", "evaluated"])
 
-    def test_bytes_changed_after_the_claim_fail_closed(self):
-        path = self.r12["6000"] / "replays" / "body" / f"{TWIN}.pending.json"
-        data = path.read_bytes()
+    def test_bytes_changed_after_the_claim_fail_their_verdict_alone(self):
+        twin = self.r12["6000"] / "replays" / "body" / f"{TWIN}.pending.json"
+        data = twin.read_bytes()
 
         def tampers(views, unityrs):
-            path.write_bytes(data + b" ")
+            twin.write_bytes(data + b" ")
             return self.observe(views, unityrs)
-        with self.assertRaisesRegex(ValueError, "read bytes the intake never bound"):
-            self.evaluate(self.freeze(self.digest), observe=tampers)
-        self.assertEqual([row["event"] for row in ledger(self.ledger)], ["claimed", "failed"])
+        report = self.evaluate(self.freeze(self.digest), observe=tampers)
+        self.assertFalse(report["b5a"]["passed"])
+        self.assertIn("read bytes the intake never bound", report["b5a"]["failures"][0])
+        self.assertEqual(self.events(), ["claimed", "b5a", "evaluated"])
+        # Evidence only twist reads, changed after the claim: twist refused, B5a stands.
+        self.setUp()
+        twist = self.r12["6000"] / "replays" / "body" / f"{TWIST_CLIP}.pending.json"
+        twist_data = twist.read_bytes()
+
+        def rule(candidate, views, unityrs):
+            twist.write_bytes(twist_data + b" ")
+            for editor, kind, view in views:
+                if kind == "round12":
+                    round12.complete(view, readers(), [TWIST_CLIP])
+            return {"2022": [], "6000": []}
+        report = self.evaluate(self.freeze(self.digest, CANDIDATE), rule)
+        self.assertTrue(report["b5a"]["passed"])
+        self.assertEqual(report["twist"]["admitted"], "none")
+        self.assertIn("never bound", report["twist"]["failures"][0])
         # The claim stays spent, the run restored.
-        path.write_bytes(data)
+        twist.write_bytes(twist_data)
         with self.assertRaisesRegex(ValueError, "already evaluated"):
             self.evaluate(self.freeze(self.digest))
 
     def test_the_sealed_views_open_only_after_the_claim(self):
-        runs = {e: (folder, None) for e, folder in self.r12.items()}
         with self.assertRaisesRegex(ValueError, "opens only after the intake's claim"):
-            seal.sealed_views(runs, {}, self.digest, self.ledger)
+            seal.sealed_views(self.r12, {}, self.digest, self.ledger)
         seal.claim(self.digest, self.ledger)
-        views = seal.sealed_views(runs, {}, self.digest, self.ledger)
-        self.assertEqual(sorted(round12.complete(views[0][2], [TWIN, EXPLORATION])), sorted([TWIN, EXPLORATION]))
+        views = seal.sealed_views(self.r12, {}, self.digest, self.ledger)
+        self.assertEqual(sorted(round12.complete(views[0][2], readers(), [TWIN, EXPLORATION])),
+                         sorted([TWIN, EXPLORATION]))
 
 
 if __name__ == "__main__":

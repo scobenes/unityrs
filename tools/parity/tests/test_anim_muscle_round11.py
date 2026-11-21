@@ -48,14 +48,9 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(len(required), 348)
 
 
-def open_view(folder):
-    """A view opening every round 11 case, as the round 12 seal's after its claim."""
-    return round12.View(folder, {case: ("exploration", bundle) for case, bundle in round11.CASES.items()})
-
-
 def read(folder, view=None):
-    """Recordings of `folder`, every document read."""
-    run = round11.Recordings(folder, view or open_view(folder))
+    """Recordings of `folder` through `view` (round 11's own by default), every document read."""
+    run = round11.Recordings(folder, view)
     dict(run.documents)
     return run
 
@@ -115,13 +110,14 @@ class RunTests(unittest.TestCase):
         self.assertEqual(sorted(read(self.folder(clips)).documents), sorted(clips))
 
     def test_a_sealed_case_is_listed_but_never_opened(self):
-        # The default view is round 12's exploration one: B5a's face sweep is listed by name, and reading it is
-        # refused before its file opens; a witness Avatar's clip opens.
+        # Through round 12's exploration view, B5a's face sweep is listed by name, and reading it is refused
+        # before its file opens; a witness Avatar's clip opens. Round 11's own default view opens both.
         import anim_twist_witness as witness
 
         allowed = witness.allowlisted("compact")
         folder = self.folder(("body-probes-face", allowed))
-        run = round11.Recordings(folder)
+        self.assertEqual(sorted(read(folder).documents), sorted(("body-probes-face", allowed)))
+        run = round11.Recordings(folder, round12.round11_view(folder))
         self.assertEqual(sorted(run.documents), sorted(("body-probes-face", allowed)))
         self.assertEqual(run.view.read, {"run.json": run.view.read["run.json"]})
         with self.assertRaisesRegex(ValueError, "sealed"):

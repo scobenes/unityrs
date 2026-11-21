@@ -8,8 +8,8 @@ refusal-evidence and 318 in-scope full-body clips. Freeze v8's `anim_body_runs.R
 edited; `Recordings` reads them beside it, from the same run folder. A run declares round 11 in `round.json`.
 Each run's required cases are this inventory together with any full-body clip its `run.json` lists, so neither
 can drop one unseen. Each capture's own metadata names its case, run, Editor version and bundle.
-anim_muscle_confirm.py judges them. No round 11 rig is a hold-out rig. Round 12 reuses some of them: each opens
-only through its allowlist (anim_fixture_round12.View), lazily.
+anim_muscle_confirm.py judges them. No round 11 rig is a hold-out rig. Each opens lazily through a view
+(anim_fixture_round12.View): round 11's own by default, round 12's sealed ones where round 12 reuses them.
 """
 
 import os
@@ -67,17 +67,17 @@ def required(statuses):
 
 
 class Recordings:
-    """One round 11 training run's B5a cases, behind the round 12 allowlist (anim_fixture_round12.View): Unity's
-    recordings (`.pending.json`, as `Run(pending=True)` reads them) by case, opened lazily through `view` only when
-    a document is read, and the required cases it lacks, by names alone. The default view opens round 11's
-    exploration cases only (anim_fixture_round12.round11_view), so a sealed case is refused when read, never
-    opened."""
+    """One round 11 training run's B5a cases through a view (anim_fixture_round12.View): Unity's recordings
+    (`.pending.json`, as `Run(pending=True)` reads them) by case, opened lazily through `view` only when a document
+    is read, and the required cases it lacks, by names alone. The default view is round 11's own, permissive one
+    (anim_fixture_round12.round11_own_view), for round 11's own confirmation and case export; round 12 passes its
+    sealed views, which refuse a case they do not allow when it is read, never opening it."""
 
     def __init__(self, folder, view=None):
         import anim_body_runs as runs
         import anim_fixture_round12 as round12
 
-        self.view = view or round12.round11_view(folder)
+        self.view = view or round12.round11_own_view(folder)
         replay.require(Path(self.view.folder) == Path(folder), f"the view is another folder's than {folder}")
         manifest = replay.read_json(self.view.run_file("run.json").decode("utf-8"))
         self.folder, self.version, self.run_id = folder, manifest["run"]["editor_version"], manifest["run"]["run_id"]
