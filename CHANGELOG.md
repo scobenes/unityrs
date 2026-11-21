@@ -46,6 +46,8 @@ tiers.
 - **Python.** The `unityrs` package follows UnityPy's API (`Environment`,
   object mode, the generated classes from a TPK, the helpers and the
   exporters), with the GIL released while the core works.
+- **One crate.** `unityrs` re-exports the library crates, each behind a
+  feature (`batch` and the texture encoders are opt-in).
 - **Agents and scripts.** `describe`, `inspect`, `show`, the canonical dump
   and the JSON protocols of `docs/AGENTS.md`.
 

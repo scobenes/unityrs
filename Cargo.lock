@@ -1509,6 +1509,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "unityrs"
+version = "1.0.0"
+dependencies = [
+ "unityrs-anim",
+ "unityrs-audio",
+ "unityrs-batch",
+ "unityrs-core",
+ "unityrs-export",
+ "unityrs-gltf",
+ "unityrs-imageio",
+ "unityrs-mesh",
+ "unityrs-meshdecode",
+ "unityrs-scene",
+ "unityrs-texture",
+ "unityrs-tpk",
+]
+
+[[package]]
 name = "unityrs-anim"
 version = "1.0.0"
 dependencies = [

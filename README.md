@@ -18,20 +18,20 @@ Agents and scripts: see [the agent interface guide](docs/AGENTS.md) for `describ
 
 ### Rust
 
-The library is a set of crates; `unityrs-core` reads bundles, serialized
-files and typetrees, and the others build on it (`unityrs-texture`,
-`unityrs-export`, `unityrs-gltf`, `unityrs-batch` and more). The toolchain is
-Rust 1.99 or later.
+The `unityrs` crate is the library: the reader (`unityrs-core`) at its root,
+and the texture, image, mesh, scene, audio, animation, glTF and export crates
+as modules behind default features (`batch` and the texture encoders,
+`encode`, are opt-in). The toolchain is Rust 1.99 or later.
 
 ```sh
-cargo add unityrs-core
+cargo add unityrs
 ```
 
 ```rust
 use std::path::Path;
-use unityrs_core::env::{EnvOptions, Environment};
+use unityrs::env::{EnvOptions, Environment};
 
-fn main() -> Result<(), unityrs_core::Error> {
+fn main() -> Result<(), unityrs::Error> {
     let env = Environment::new(EnvOptions::unitypy());
     env.load_path(Path::new("level0.bundle"))?;
     for object in env.objects() {

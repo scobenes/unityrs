@@ -1,0 +1,55 @@
+[package]
+name = "unityrs"
+description = "Fast Unity asset extraction, compatible with UnityPy: bundles, serialized files, typetrees, textures, meshes, audio, animation and glTF export."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# Re-exports only: the crates it names carry their own licences and notices.
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme.workspace = true
+keywords = ["unity", "unitypy", "assetbundle", "gamedev", "texture"]
+categories = ["game-development", "parser-implementations", "multimedia::images"]
+# The package carries the code and its notices; tests stay in the repository.
+include = ["/src/**", "/LICENSE-*"]
+
+# One feature per re-exported crate, and the user-facing features of those
+# crates (`vorbis`, `encode`); their test-only features are not mirrored.
+# The default is every reader and exporter; `batch` (an async HTTP and S3
+# stack) and `encode` (a C++ toolchain) are opt-in.
+[features]
+default = ["tpk", "texture", "imageio", "meshdecode", "mesh", "scene", "audio", "vorbis", "anim", "gltf", "export"]
+tpk = ["dep:unityrs-tpk"]
+texture = ["dep:unityrs-texture"]
+# Texture encoders for `set_image` (etcpak, bc7enc, astcenc; needs a C++ compiler).
+encode = ["texture", "unityrs-texture/encode"]
+imageio = ["dep:unityrs-imageio"]
+meshdecode = ["dep:unityrs-meshdecode"]
+mesh = ["dep:unityrs-mesh"]
+scene = ["dep:unityrs-scene"]
+audio = ["dep:unityrs-audio"]
+# FSB5 Vorbis to WAV, in `audio` and in `export`'s audio.
+vorbis = ["audio", "unityrs-audio/vorbis", "unityrs-export?/vorbis"]
+anim = ["dep:unityrs-anim"]
+# glTF export, and `export`'s glTF units when both are on.
+gltf = ["dep:unityrs-gltf", "unityrs-export?/gltf"]
+export = ["dep:unityrs-export"]
+batch = ["dep:unityrs-batch"]
+
+[dependencies]
+unityrs-core = { version = "1.0.0", path = "../unityrs-core" }
+unityrs-tpk = { version = "1.0.0", path = "../unityrs-tpk", optional = true }
+unityrs-texture = { version = "1.0.0", path = "../unityrs-texture", optional = true }
+unityrs-imageio = { version = "1.0.0", path = "../unityrs-imageio", optional = true }
+unityrs-meshdecode = { version = "1.0.0", path = "../unityrs-meshdecode", optional = true }
+unityrs-mesh = { version = "1.0.0", path = "../unityrs-mesh", optional = true }
+unityrs-scene = { version = "1.0.0", path = "../unityrs-scene", optional = true }
+unityrs-audio = { version = "1.0.0", path = "../unityrs-audio", default-features = false, optional = true }
+unityrs-anim = { version = "1.0.0", path = "../unityrs-anim", optional = true }
+unityrs-gltf = { version = "1.0.0", path = "../unityrs-gltf", optional = true }
+unityrs-export = { version = "1.0.0", path = "../unityrs-export", optional = true }
+unityrs-batch = { version = "1.0.0", path = "../unityrs-batch", optional = true }
+
+[lints]
+workspace = true
