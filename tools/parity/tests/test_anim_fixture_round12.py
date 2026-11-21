@@ -577,11 +577,20 @@ class Round11CompletionTests(unittest.TestCase):
                 (folder / name).read_bytes()).hexdigest() for name in files if name not in leave})})
         face = "replays/body/body-probes-face.pending.json"
         ledger = scratch.for_case(self) / "ledger"
+        accepted = []
+
+        def check_accepted_bundles(folder_, replay_, open_view, held):
+            accepted.append((Path(folder_), set(held)))
+            return []
         with mock.patch.object(r11, "check_inventory"), mock.patch.object(complete, "complete_folder", complete_folder), \
-                mock.patch.object(complete, "recorded_paths", recorded_paths), mock.patch.object(seal, "LEDGER_DIR", ledger):
+                mock.patch.object(complete, "recorded_paths", recorded_paths), mock.patch.object(seal, "LEDGER_DIR", ledger), \
+                mock.patch.object(complete, "read_manifest", return_value=(None, {})), \
+                mock.patch.object(r11, "check_accepted_bundles", check_accepted_bundles):
             count, _, _, held = r11.complete_round(folder, "unityrs", None, replay)
             sealed = {n for n, p in round12.round11_cases().items() if p == "confirmation"}
             self.assertEqual(held, sorted(sealed))
+            # The expected failures' bundles are checked on every path, round 12's sealed ones held back here.
+            self.assertEqual(accepted[-1], (folder, sealed))
             self.assertEqual(count, len(names) - len(held))
             self.assertFalse({name.removesuffix(".pending.json") for name in seen[-1][1]} & sealed)
             self.assertIs(complete.recorded_paths, recorded_paths)
@@ -611,6 +620,7 @@ class Round11CompletionTests(unittest.TestCase):
             self.assertEqual(r11.complete_round(folder, "unityrs", None, replay, digest)[3], [])
             private, read = seen[-1]
             self.assertNotEqual(private, folder)
+            self.assertEqual(accepted[-1], (private, set()))
             self.assertEqual(sorted(read), sorted(f"{name}.pending.json" for name in names))
             self.assertEqual(read["body-probes-face.pending.json"], (folder / face).read_bytes())
 

@@ -33,7 +33,7 @@ from . import _native as _direct_native
 _direct_native._direct_originals(ObjectReader)
 del _direct_native
 
-__version__ = "0.0.1"
+__version__ = "1.0.0"
 reSplit = re.compile(r"(.*?([^\/\\]+?))\.split\d+")
 
 

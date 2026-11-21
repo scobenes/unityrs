@@ -28,7 +28,10 @@ module extends their tables only while it runs (`round11_tables`), and no
 pinned module imports it. A round 11 run declares its generation in
 `round.json` beside `run.json`; `complete` here requires that declaration,
 the whole body inventory (every earlier body case and every round 11 case
-listed and recorded), and on every case B4 reads (E5's, F5's chain clips
+listed and recorded, but `EXPECTED_FAILURES`: the two body sweeps, failed
+with the recorder's exact message and listed as not covered, URS-42), each
+bundle object's identity with its full container path where `inspect`
+lists a shortened one (`resolve_preview`), and on every case B4 reads (E5's, F5's chain clips
 and F4's compact clips, `B4_CASES`) B4's inputs as chain.rs reads them: the
 chain exactly as B4 admits it (on the recorded rest pose and on the bundle's
 serialized Transforms, the Animator node's placement, its ancestor and the
@@ -298,11 +301,11 @@ def serialized_chain(name, rig, root, spec, view, replay):
     replay.require(ok, f"the built chain of {name} is not one B4 admits as the {rig} rig at the {root} root")
 
 
-def human_scale(name, spec, view, replay):
-    """The serialized Avatar's m_Scale, as B4 reads it (chain.rs `scale`), not the capture's."""
+def human_scale(name, avatar, replay):
+    """The serialized Avatar's m_Scale, as B4 reads it (chain.rs `scale`), not the capture's. `avatar` is the
+    Avatar's value (`view.value`), never its asset key."""
     from anim_body_runs import human_of
 
-    avatar = view.asset(spec["avatar_asset"], 90)
     scale = human_of(avatar).get("m_Scale") if isinstance(avatar, dict) else None
     replay.require(type(scale) in (int, float), f"no serialized Avatar m_Scale in {name}")
     return scale
@@ -421,9 +424,11 @@ def check_body(name, fixture, doc, view, clip_key, replay):
     info = (ROUND11_INFO | body.BODY_INFO)[name]
     if name in B4_CASES:
         serialized_chain(name, info["rig"], info["root"], doc["spec"], view, replay)
-        scale = human_scale(name, doc["spec"], view, replay)
+        # The Avatar's value, read through its key as every bundle read is.
+        avatar = view.value(view.asset(doc["spec"]["avatar_asset"], 90))
+        scale = human_scale(name, avatar, replay)
         replay.require(H_RANGE[0] <= scale <= H_RANGE[1], f"human scale {scale!r} of {name} is outside B4's range")
-        avatar_skeleton(name, doc, view.asset(doc["spec"]["avatar_asset"], 90), replay)
+        avatar_skeleton(name, doc, avatar, replay)
         if info["kind"] == "clip":
             clip_configuration(name, info, view.value(clip_key), replay)
     if "scope" in ROUND11_INFO.get(name, {}):
@@ -432,10 +437,107 @@ def check_body(name, fixture, doc, view, clip_key, replay):
     return result
 
 
+# Round 11 cases a run records as failed by design, each with the recorder's exact message and the accepted reason:
+# at twist 0 Unity turns no limb bone by its own twist muscle, so each body sweep's response check stops at the
+# first limb twist in HumanTrait's order (URS-42).
+EXPECTED_FAILURES = {name: (f"Record {name}: Left Upper Leg Twist In-Out at 1 turned no bone in {name}.",
+                            "limb-twist redistributes at twist 0 (URS-42)")
+                     for name in ("body-probes-muscles-compact", "body-probes-muscles-tall")}
+
+
+def accepted_failure(row):
+    """An expected failure's run.json row as completion lists it, not covered with its accepted reason; None for
+    any other row, a listed case failing with another message among them. It only ever yields `not_covered`, never
+    a pass, and `check_inventory` also requires the sweep's own bundle, which the recorder builds before it
+    records.
+
+    The message is the strongest evidence the recorder leaves: it writes no partial capture and logs no
+    per-muscle progress, only the first failing sample (UnityrsBodyRecording.CheckBodyResponse checks the samples
+    in the builder's order and stops there, so every earlier single-muscle sample turned its bone). A regression
+    that stopped this muscle's own bone for another reason would fail with the same message; the consequence is
+    the sweep's lost coverage, which B5a's confirmation already lacks, never a false pass."""
+    expected = EXPECTED_FAILURES.get(row.get("name"))
+    if expected and row.get("status") == "failed" and row.get("reason") == expected[0]:
+        return dict(row, status="not_covered", reason="expected failure: " + expected[1])
+    return None
+
+
+# The most source bytes `inspect` lists of a string (the CLI's agent/listing.rs `string`).
+PREVIEW_BYTES = 128
+
+
+def preview_of(path):
+    """`path` as `inspect` lists it: itself, or past PREVIEW_BYTES UTF-8 bytes a preview of its first 128 bytes,
+    cut back to a whole code point, with its byte length and the bytes omitted."""
+    data = path.encode("utf-8")
+    if len(data) <= PREVIEW_BYTES:
+        return path
+    prefix = data[:PREVIEW_BYTES]
+    try:
+        prefix.decode("utf-8")
+    except UnicodeDecodeError as error:
+        prefix = prefix[:error.start]
+    return {"$unityrs": "preview", "length": len(data), "prefix": prefix.decode("utf-8"),
+            "omitted": len(data) - len(prefix)}
+
+
+def resolve_preview(headers, doc, listed):
+    """A `show` document's full container path in place of the preview `inspect` lists for a long one, so
+    completion compares the object's whole identity. Only where the bundle's own container table lists exactly
+    that path for the object (`listed(key)`, a read apart from show's object header), the listed preview is that
+    path's (`preview_of`), and every other field is the same. Returns None where `inspect` lists no preview, True
+    once resolved, and False for anything else, a `show` path that repeats the preview included: the caller
+    refuses it."""
+    obj = doc.get("object") if isinstance(doc, dict) else None
+    if not isinstance(obj, dict):
+        return None
+    key = (obj.get("file_index"), obj.get("path_id"))
+    head = headers.get(key)
+    preview, full = (head or {}).get("container_path"), obj.get("container_path")
+    if not isinstance(preview, dict):
+        return None
+    if (isinstance(full, str) and preview == preview_of(full)
+            and {k: v for k, v in head.items() if k != "container_path"}
+            == {k: v for k, v in obj.items() if k != "container_path"}
+            and listed(key) == {full}):
+        head["container_path"] = full
+        return True
+    return False
+
+
 @contextmanager
 def round11_tables():
-    """The body tables and checks with round 11's, in anim_fixture_body and anim_replay_complete, while it runs."""
+    """The body tables and checks with round 11's, in anim_fixture_body and anim_replay_complete, while it runs:
+    its expected failures listed as accepted (`accepted_failure`), and each bundle object's identity compared
+    with its full container path (`resolve_preview`)."""
     import anim_replay_complete as complete
+
+    read_manifest, view = complete.read_manifest, complete.BundleView
+
+    def manifest(folder, replay):
+        found, run = read_manifest(folder, replay)
+        return dict(found, cases=[accepted_failure(row) or row for row in found["cases"]]), run
+
+    class Round11View(view):
+        def document(self, mode, options, name):
+            doc = super().document(mode, options, name)
+            if mode == "show":
+                self.require(resolve_preview(self.headers, doc, self.container_paths) is not False,
+                             f"show path is not the bundle's container path for a previewed object in "
+                             f"{self.path.name}: {(doc.get('object') or {}).get('path_id')}")
+            return doc
+
+        def container_paths(self, key):
+            """The paths the bundle's AssetBundle container table lists for `key`, read as BundleView.asset
+            reads that table."""
+            if self.container is None:
+                self.container = []
+                for owner, header in self.headers.items():
+                    if header["class_id"] == 142:
+                        container = self.value(owner)["m_Container"]
+                        rows = container.items() if isinstance(container, dict) else container
+                        self.container.extend((path, owner, info["asset"]) for path, info in rows)
+            return {path for path, owner, ptr in self.container if self.pointer(owner, ptr) == key}
 
     cases, info = body.BODY_CASES | ROUND11_CASES, body.BODY_INFO | ROUND11_INFO
     patches = [(body, "BODY_CASES", cases), (body, "BODY_INFO", info), (body, "rig_bones", rig_bones),
@@ -444,7 +546,8 @@ def round11_tables():
                (complete, "BODY_CASES", cases), (complete, "BODY_INFO", info),
                (complete, "BODY_BUNDLES", body.BODY_BUNDLES | ROUND11_BUNDLES),
                (complete, "OPTIONAL_CASES", complete.OPTIONAL_CASES | ROUND11_CASES.keys()),
-               (complete, "check_body", check_body)]
+               (complete, "check_body", check_body), (complete, "read_manifest", manifest),
+               (complete, "BundleView", Round11View)]
     saved = [(module, name, getattr(module, name)) for module, name, _ in patches]
     try:
         for module, name, value in patches:
@@ -468,17 +571,42 @@ def check_inventory(folder, replay):
     replay.require(declared == {"format": "unityrs.fixture_round", "round": ROUND,
                                 "run_id": manifest["run"].get("run_id")}, "round.json does not declare this round 11 run")
     statuses = {row["name"]: row.get("status") for row in manifest["cases"]}
+    accepted = {row["name"] for row in manifest["cases"] if accepted_failure(row)}
+    # An expected failure's sweep was built before it was recorded: its bundle is there, as a recorded case's.
+    for name in sorted(accepted):
+        bundle = folder / "bundles" / ROUND11_CASES[name].bundle
+        replay.require(bundle.is_file() and bundle.stat().st_size > 0,
+                       f"{name}: expected failure without its bundle {ROUND11_CASES[name].bundle}")
     missing = sorted((body.BODY_CASES.keys() | ROUND11_CASES.keys()) - statuses.keys())
     replay.require(not missing, f"round 11 run lacks {len(missing)} body case(s): " + ", ".join(missing[:20]))
     # Every body case a round 11 run expects is recorded: a refused Avatar, a dropped curve or a skipped case
-    # fails the run.
+    # fails the run. Only an expected failure, with the recorder's exact message, is accepted.
     unrecorded = [f"{name} ({statuses[name]})" for name in sorted(body.BODY_CASES.keys() | ROUND11_CASES.keys())
-                  if statuses[name] != "recorded"]
+                  if statuses[name] != "recorded" and name not in accepted]
     replay.require(not unrecorded, f"round 11 body cases not recorded ({len(unrecorded)}): " + ", ".join(unrecorded))
 
 
+def check_accepted_bundles(folder, replay, open_view, held=()):
+    """Each expected failure's bundle opens as a bundle of this run (`open_view`, anim_replay_complete.BundleView:
+    its UnityFS signature, its inspection, its Editor version and run stamp) and lists the sweep's prefab, so a
+    placeholder or a stale file fails. A case in `held` (round 12's sealed evidence before its claim) is never
+    opened: its name is returned instead."""
+    manifest = replay.read_json((folder / "run.json").read_text(encoding="utf-8"))
+    skipped = []
+    for row in manifest["cases"]:
+        if accepted_failure(row):
+            if row["name"] in held:
+                skipped.append(row["name"])
+                continue
+            fixture = ROUND11_CASES[row["name"]]
+            view = open_view(folder / "bundles" / fixture.bundle)
+            view.asset(f"assets/unityrsfixtures/{fixture.folder}/{fixture.prefab}.prefab", 1)
+    return skipped
+
+
 def complete_round(folder, unityrs, inspect_dir, replay, intake_digest=None):
-    """Complete a round 11 run: its inventory, then every check `complete` runs, with round 11's tables. Round 12
+    """Complete a round 11 run: its inventory and its expected failures' bundles (`check_accepted_bundles`), then
+    every check `complete` runs, with round 11's tables. Round 12
     reuses some round 11 cases as sealed evidence (anim_fixture_round12.round11_cases: the finger and face sweeps
     and B5a's refusal clips); they stay unread and undecoded, listed as held, unless `intake_digest` names the round
     12 intake whose claim exists and binds this run (`_claimed_copy`): completion then decodes a private copy of
@@ -535,6 +663,7 @@ def _claimed_copy(folder, intake_digest, private):
 def _complete_held(folder, unityrs, inspect_dir, replay, held):
     import anim_replay_complete as complete
 
+    run = complete.read_manifest(folder, replay)[1]
     base, skipped = complete.recorded_paths, []
 
     def gated(*args):
@@ -544,12 +673,14 @@ def _complete_held(folder, unityrs, inspect_dir, replay, held):
         skipped[:] = sorted(path.name.removesuffix(".pending.json") for path in paths if path not in kept)
         return kept, mixed, run, uncovered
     with round11_tables():
+        unopened = check_accepted_bundles(folder, replay, lambda path: complete.BundleView(
+            path, complete.bundle_digest(path), 0, unityrs, inspect_dir, replay, run), held)
         complete.recorded_paths = gated
         try:
             count, uncovered, sealed = complete.complete_folder(folder, unityrs, inspect_dir, replay)
         finally:
             complete.recorded_paths = base
-    return count, uncovered, sealed, skipped
+    return count, uncovered, sealed, sorted(set(skipped) | set(unopened))
 
 
 def main():

@@ -4,7 +4,7 @@ Fast Unity asset extraction in Rust: asset bundles, serialized files,
 typetrees, textures, sprites, meshes, animation and glTF export, as a library,
 a command-line tool and Python bindings.
 
-**Status: pre-alpha.** The core reads asset bundles, serialized files and
+**Status: 1.0.0** ([changelog](CHANGELOG.md)). The core reads asset bundles, serialized files and
 typetrees as UnityPy 1.25.2 reads them. The CLI provides the canonical dump,
 value-case protocol, batch extraction, OBJ/MTL and static scene/prefab GLB export.
 The CLI also exports generic and legacy animation to GLB and runs
@@ -13,6 +13,63 @@ Positive humanoid playback is [deferred](docs/plans/anim.md#26-later-slices).
 The plan and phases are in [`docs/DESIGN.md`](docs/DESIGN.md).
 
 Agents and scripts: see [the agent interface guide](docs/AGENTS.md) for `describe`, `inspect`, `show`, and the JSON protocols.
+
+## Install
+
+### Rust
+
+The `unityrs` crate is the library: the reader (`unityrs-core`) at its root,
+and the texture, image, mesh, scene, audio, animation, glTF and export crates
+as modules behind default features (`batch` and the texture encoders,
+`encode`, are opt-in). The toolchain is Rust 1.99 or later.
+
+```sh
+cargo add unityrs
+```
+
+```rust
+use std::path::Path;
+use unityrs::env::{EnvOptions, Environment};
+
+fn main() -> Result<(), unityrs::Error> {
+    let env = Environment::new(EnvOptions::unitypy());
+    env.load_path(Path::new("level0.bundle"))?;
+    for object in env.objects() {
+        let object = object?;
+        println!("path id {} class id {}", object.path_id(), object.class_id());
+    }
+    Ok(())
+}
+```
+
+The command-line tool is the `unityrs` binary of the `unityrs-cli` crate:
+
+```sh
+cargo install unityrs-cli
+unityrs extract level0.bundle -o out
+```
+
+### Python
+
+The `unityrs` package follows UnityPy's API. Wheels are abi3, for CPython
+3.10 and later on Linux and macOS.
+
+```sh
+pip install unityrs
+```
+
+```python
+import unityrs
+
+env = unityrs.load("level0.bundle")
+for obj in env.objects:
+    if obj.type.name == "Texture2D":
+        tree = obj.read_typetree()
+        print(obj.path_id, tree["m_Name"])
+```
+
+See [the binding's guide](crates/unityrs-py/README.md) for budgets, limits
+and the threat model.
 
 ## Goals
 
@@ -31,9 +88,15 @@ Agents and scripts: see [the agent interface guide](docs/AGENTS.md) for `describ
 ## Performance
 
 <!-- bench:begin -->
-Results pending. The harness in [tools/bench](tools/bench/README.md) times unityrs against UnityPy 1.25.2 with
-UnityPyBoost, the same Python script on both, on public synthetic fixtures; the first run published from
-GitHub's ubuntu-24.04 runner will be summarised here, with the full breakdown in BENCHMARKS.md.
+unityrs against UnityPy 1.25.2 with UnityPyBoost, the same Python script on both, on public synthetic fixtures, on GitHub's ubuntu-24.04 runner (Intel(R) Xeon(R) 6975P-C), commit b4b4443667bd, 2026-11-21. Median of 7 rounds, each a fresh process with a warm file cache. API rows time the operation after imports; the extraction row times the whole process, imports included.
+
+| operation (timer contains) | inventory | UnityPy | unityrs | speedup |
+|---|---|---|---|---|
+| load and list objects | objects-lz4 (20,000 objects), objects-lzma (20,000 objects), objects-2019 (20,000 objects), many-blocks (64.0 MiB entry) | 497.3 ms | 404.8 ms | ×1.2 |
+| read every typetree | 40,000 objects in 2 layouts | 687.3 ms | 811.7 ms | ×0.85 |
+| read and decode textures | 15 formats, 113.2 Mpixel | 1.11 s | 812.8 ms | ×1.4 |
+
+Breakdown, memory, unityrs-only rows and how to rerun: [BENCHMARKS.md](BENCHMARKS.md).
 <!-- bench:end -->
 
 ## Static 3D export
