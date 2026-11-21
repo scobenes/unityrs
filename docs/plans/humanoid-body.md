@@ -548,6 +548,25 @@ Unity's read-back for (b) is not verified. B5's E5 same-bundle replay
 must cover every class in (b) before the global refusal lifts; B5's
 predicate and E5 are the release gate.
 
+**Round 11's steps.** Three separate steps, in this order, each on both
+Editor versions' runs:
+
+1. **Collection** (`anim_fixture_round11.py complete`, one Editor folder at
+   a time). It checks that the run recorded what the builder authored and
+   B4 reads: the whole body inventory recorded, B4's inputs on every case B4
+   reads, each clip's declared scope on its compiled values and recorded
+   poses, each full-body clip's curves and each sweep's response. It
+   compares nothing with Rust, and a passing collection confirms neither
+   B5a nor B5b.
+2. **B5a's confirmation** (`anim_muscle_pose.py`, on the completed round 11
+   runs of both Editors): the muscle sweeps and full-body clips against the
+   frozen muscle-pose equation and its per-sample bound, every sample in
+   both Editors.
+3. **B5b's comparison** (E5): Rust's full pose for each in-scope clip
+   against the same bundle's recording in each Editor, and each refusal-
+   evidence clip's typed refusal, in both Editors. Only this step can fill
+   the release gate's verified table.
+
 **B5's release gate.**
 
 - **Predicate.** A runtime configuration predicate decides admission. It

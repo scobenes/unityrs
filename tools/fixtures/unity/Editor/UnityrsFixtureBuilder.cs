@@ -67,6 +67,8 @@ static partial class UnityrsFixtureBuilder
     }
 
     const string NeverProduced = "Fixture was never produced.";
+    // run.json's note on a body clip case whose built m_IndexArray the Editor could not read.
+    const string IndexUnverified = "index unverified in Editor";
 
     [Serializable] sealed class RunCase
     {
@@ -95,6 +97,11 @@ static partial class UnityrsFixtureBuilder
     sealed class RunReport
     {
         readonly Dictionary<string, RunCase> cases;
+        // Cases no run may leave not covered: one fails the run as a failed case does, so "ready" means
+        // each was recorded (or, in a build-only run, built and skipped).
+        readonly HashSet<string> required = new HashSet<string>(StringComparer.Ordinal);
+        // Notes a case keeps whatever its status, in its run.json reason.
+        readonly Dictionary<string, string> notes = new Dictionary<string, string>(StringComparer.Ordinal);
         readonly Action<string> log;
 
         public RunReport(Action<string> log, IEnumerable<string> names = null)
@@ -105,14 +112,20 @@ static partial class UnityrsFixtureBuilder
                 .ToDictionary(name => name, name => new RunCase { name = name }, StringComparer.Ordinal);
         }
 
-        public void AddDeferred(string name, string reason) => cases.Add(name, new RunCase {
-            name = name, status = "not_covered", reason = reason
-        });
-
-        // Optional cases that fail, as never produced, unless a step reaches them.
-        public void AddPending(IEnumerable<string> names)
+        public void AddDeferred(string name, string reason, bool isRequired = false)
         {
-            foreach (string name in names) cases.Add(name, new RunCase { name = name });
+            cases.Add(name, new RunCase { name = name, status = "not_covered", reason = reason });
+            if (isRequired) required.Add(name);
+        }
+
+        // Cases that fail, as never produced, unless a step reaches them; not covered is an error for them too.
+        public void AddRequired(IEnumerable<string> names)
+        {
+            foreach (string name in names)
+            {
+                cases.Add(name, new RunCase { name = name });
+                required.Add(name);
+            }
         }
 
         // Fail, with an error line, each case no step has reached yet.
@@ -125,6 +138,8 @@ static partial class UnityrsFixtureBuilder
                 log("ERROR " + name + ": " + reason);
             }
         }
+
+        public void Note(string name, string note) => notes[name] = note;
 
         public void Set(string name, string status, string reason = "")
         {
@@ -168,11 +183,16 @@ static partial class UnityrsFixtureBuilder
             var rows = cases.Values.OrderBy(row => row.name, StringComparer.Ordinal).ToArray();
             foreach (var row in rows)
             {
+                if (notes.TryGetValue(row.name, out string note))
+                    row.reason = row.reason.Length == 0 ? note : row.reason + " (" + note + ")";
                 row.reason = projectPath.Replace(row.reason, "<project>");
                 log(row.status + " " + row.name + (row.reason.Length > 0 ? ": " + row.reason : ""));
             }
             File.WriteAllText(Path.Combine(directory, "run.json"), JsonUtility.ToJson(new RunManifest { run = run, cases = rows }, true));
-            return rows.Where(row => row.status == "failed").Select(row => row.name).ToArray();
+            foreach (var row in rows.Where(row => required.Contains(row.name) && row.status == "not_covered"))
+                log("ERROR " + row.name + ": a required case was not covered.");
+            return rows.Where(row => row.status == "failed" || required.Contains(row.name) && row.status == "not_covered")
+                .Select(row => row.name).ToArray();
         }
     }
 
@@ -230,6 +250,8 @@ static partial class UnityrsFixtureBuilder
                     var build = PrepareInFixtureScene(report, run.Stamp, variant.Prepare, ref preserveStaging);
                     BuildAndCapture(build, report, staging, run, target, variant.Record, Log);
                     failures = report.Write(staging, projectPath, run);
+                    // Only a recorded run is a round: a build-only run's replays are skipped, which completion refuses.
+                    if (run.variant == "builtin" && variant.Record) WriteRound(staging, run.run_id);
                     Log(failures.Length == 0 ? "Finished." : "Finished with fixture errors: " + string.Join(", ", failures));
                 }
                 catch (Exception error)
@@ -245,7 +267,18 @@ static partial class UnityrsFixtureBuilder
             publishing = false;
             EditorUtility.ClearProgressBar();
             string location = "Unity " + version + " / " + target + "\n\nOutput in your project folder:\n" + relative;
-            if (failures.Length == 0)
+            // "Ready" for a recorded Built-in run and for the URP and Android runs, whose bundles are
+            // the run (they record nothing by design). Only the Built-in build-only menu item's
+            // output has nothing to send: it records nothing a Built-in run must.
+            bool buildOnly = run.variant == "builtin" && !variant.Record;
+            if (failures.Length == 0 && buildOnly)
+                EditorUtility.DisplayDialog("unityrs fixtures built, not recorded",
+                    "The bundles were built and checked, but nothing was recorded, so this output is not a run to send. "
+                    + "Use Tools > unityrs > Build and record all fixtures for that.\n\n" + location, "OK");
+            else if (failures.Length == 0 && !variant.Record)
+                EditorUtility.DisplayDialog("unityrs fixtures ready",
+                    "The " + run.variant + " bundles were built and checked. Zip this folder and send it.\n\n" + location, "OK");
+            else if (failures.Length == 0)
                 EditorUtility.DisplayDialog("unityrs fixtures ready", location, "OK");
             else
                 EditorUtility.DisplayDialog("unityrs fixtures built with errors",

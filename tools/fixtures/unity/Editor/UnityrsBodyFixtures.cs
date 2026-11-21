@@ -18,8 +18,10 @@ static partial class UnityrsFixtureBuilder
     internal sealed class BodyRig
     {
         public string Name;
-        public bool Tall, Noncoplanar, Armature, ScaledAnimator;
-        public string[] Omit = Array.Empty<string>(), Extras = Array.Empty<string>();
+        // Full: an E5 full-body clip rig, every muscle on a curve in its clips (UnityrsBodyClips.cs FullRigs);
+        // Scoped: one whose curves stay inside freeze v8's scope (ScopedRigs), playing Variants.
+        public bool Tall, Noncoplanar, Armature, ScaledAnimator, Full, Scoped;
+        public string[] Omit = Array.Empty<string>(), Extras = Array.Empty<string>(), Variants;
         public float Arms = 1, Legs = 1, Size = 1, HipsScale = 1;
     }
 
@@ -50,7 +52,11 @@ static partial class UnityrsFixtureBuilder
     };
     // F6 rigs that came with the range sweeps (anim_fixture_body.py LATER_RIGS), each required.
     static readonly string[] LaterRigs = { "no-upper-chest-toes", "no-upper-chest-left-toes", "no-upper-chest-right-toes" };
-    // F5: each plays F3's targets and the F4 all-off clip.
+    // F5: each plays F3's targets and the F4 all-original motion clip. These are
+    // freeze v8's chain rigs, which B4 trained on; round 11's E5 chain rigs are
+    // E5ChainRigs (UnityrsBodyClips.cs), never here. Size scales every bone
+    // offset and the hips' own offset, never the armature's transform: B4 admits
+    // the armature only at its fixture transform (BETWEEN).
     static readonly BodyRig[] ChainRigs = {
         new BodyRig { Name = "scaled-animator", ScaledAnimator = true },
         new BodyRig { Name = "large", Size = 1.5f },
@@ -353,10 +359,13 @@ static partial class UnityrsFixtureBuilder
     static IEnumerable<string> BodyCases() => ProbeRigs.SelectMany(rig => RigCases(rig, false))
         .Concat(ExtraProbes.Select(extra => extra.name)).Concat(TwistProbes.Select(twist => twist.name))
         .Concat(RangeProbes.Select(range => range.name)).Concat(BandProbes.Select(band => band.name))
-        .Concat(ClipCases()).Concat(ChainRigs.SelectMany(rig => RigCases(rig, true)));
+        .Concat(ClipCases()).Concat(ChainRigs.Concat(E5ChainRigs).SelectMany(rig => RigCases(rig, true)))
+        .Concat(ClipRigs.Concat(FullRigs).Concat(ScopedRigs).SelectMany(rig => ClipCases(rig)))
+        .Concat(MuscleSweeps.Select(sweep => sweep.name));
 
-    // Each body case fails until a step prepares it, so none can vanish unseen.
-    static void AddBodyCases(RunReport report) => report.AddPending(BodyCases());
+    // Each body case fails until a step prepares it, so none can vanish unseen, and the run fails unless
+    // each records: round 11's completion requires every body case recorded, so "ready" means it will pass that.
+    static void AddBodyCases(RunReport report) => report.AddRequired(BodyCases());
 
     static void BuildBody(Build build, RunReport report)
     {
@@ -386,10 +395,14 @@ static partial class UnityrsFixtureBuilder
             report.Prepare(build, "Prepare " + band.name, new[] { band.name },
                 () => BuildBodyRig(build, report, ProbeRigs.Single(rig => rig.Name == band.rig), false,
                     (band.name, band.rig, null), sweep: "band"));
-        foreach (var rig in ChainRigs)
+        foreach (var rig in ChainRigs.Concat(E5ChainRigs))
             report.Prepare(build, "Prepare body-chain-" + rig.Name, RigCases(rig, true).ToArray(),
                 () => BuildBodyRig(build, report, rig, chain: true), true);
         report.Prepare(build, "Prepare " + BodyClipBundle, ClipCases().ToArray(), () => BuildBodyClips(build, report), true);
+        // E5's clip rigs and full-body clip rigs, each in a bundle of its own: Unity refusing one's Avatar is an error.
+        foreach (var rig in ClipRigs.Concat(FullRigs).Concat(ScopedRigs))
+            report.Prepare(build, "Prepare " + ClipBundle(rig), ClipCases(rig).ToArray(), () => BuildBodyClips(build, report, rig));
+        BuildMuscleSweeps(build, report);
         var prepared = new HashSet<string>(build.Replays.Select(replay => replay.OutputName), StringComparer.Ordinal);
         report.FailUnreached(BodyCases().Where(name => !prepared.Contains(name)),
             "No preparation step produced this body fixture.");
@@ -431,6 +444,7 @@ static partial class UnityrsFixtureBuilder
             Add(side + "LowerArm", side + "UpperArm", Vector3.right * (sign * (tall ? .34f : .26f) * rig.Arms));
             Add(side + "Hand", side + "LowerArm", Vector3.right * (sign * (tall ? .26f : .23f) * rig.Arms));
         }
+        AddFingers(rig, Add);
         return nodes;
     }
 
@@ -474,7 +488,7 @@ static partial class UnityrsFixtureBuilder
         if (rig.Armature)
         {
             // Hips at (0, .72, 0) in the rig: the armature's inverse turn of (0, .67, -.1), over its scale.
-            hips.localPosition = new Vector3(0, .125f, .8375f);
+            hips.localPosition = new Vector3(0, .125f, .8375f) * rig.Size;
             hips.localRotation = Quaternion.Euler(90, 0, 0);
         }
         if (rig.HipsScale != 1)
@@ -766,7 +780,7 @@ static partial class UnityrsFixtureBuilder
                     BodySchedule(mapped, targets: true));
                 if (chainMissing != null)
                 {
-                    report.Set(bundle + "-clip", "not_covered", chainMissing);
+                    report.Set(bundle + "-clip", "failed", chainMissing);
                     return;
                 }
                 var clipReplay = Replay(bundle + "-clip", prefab, clipPaths[1], "clip", "identity");
@@ -777,12 +791,12 @@ static partial class UnityrsFixtureBuilder
             }
             if (extra.name != null)
             {
-                // A null plan is a twist, range or band sweep.
+                // A null plan is a twist, range, band or muscle sweep.
                 var extraReplay = Replay(extra.name, prefab, clipPaths[0], "probes", "identity");
                 extraReplay.Body.Variant = extra.plan == null ? sweep : "extra";
                 AddProbeReplay(build, extraReplay, extra.plan != null ? ExtraSchedule(mapped, extra.plan)
                     : sweep == "range" ? RangeSchedule(mapped) : sweep == "band" ? RangeSchedule(mapped, band: true)
-                    : TwistSchedule());
+                    : sweep == "muscle" ? MuscleSchedule(extra.name, mapped) : TwistSchedule());
                 return;
             }
             AddProbeReplay(build, Replay("body-probes-" + rig.Name, prefab, clipPaths[0], "probes", "identity"),
