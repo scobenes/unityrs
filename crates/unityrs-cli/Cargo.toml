@@ -12,6 +12,12 @@ rust-version.workspace = true
 license = "(MIT OR Apache-2.0) AND PSF-2.0"
 repository.workspace = true
 authors.workspace = true
+readme.workspace = true
+keywords = ["unity", "unitypy", "assetbundle", "extract", "cli"]
+categories = ["command-line-utilities", "game-development"]
+# The package carries the code and its notices; tests, fixtures and
+# examples stay in the repository.
+include = ["/src/**", "/LICENSE-*", "/NOTICE-*"]
 
 [[bin]]
 name = "unityrs"
@@ -24,16 +30,16 @@ sha2 = "=0.11.1"
 caseless = "=0.2.2"
 # `startup_failed`'s errno name (src/batch.rs). Already in the lock.
 libc = "=0.2.191"
-unityrs-batch = { path = "../unityrs-batch" }
-unityrs-core = { path = "../unityrs-core" }
-unityrs-gltf = { path = "../unityrs-gltf" }
-unityrs-scene = { path = "../unityrs-scene" }
-unityrs-export = { path = "../unityrs-export", features = ["vorbis", "gltf"] }
-unityrs-mesh = { path = "../unityrs-mesh" }
-unityrs-tpk = { path = "../unityrs-tpk" }
-unityrs-dump = { path = "../unityrs-dump" }
+unityrs-batch = { version = "1.0.0", path = "../unityrs-batch" }
+unityrs-core = { version = "1.0.0", path = "../unityrs-core" }
+unityrs-gltf = { version = "1.0.0", path = "../unityrs-gltf" }
+unityrs-scene = { version = "1.0.0", path = "../unityrs-scene" }
+unityrs-export = { version = "1.0.0", path = "../unityrs-export", features = ["vorbis", "gltf"] }
+unityrs-mesh = { version = "1.0.0", path = "../unityrs-mesh" }
+unityrs-tpk = { version = "1.0.0", path = "../unityrs-tpk" }
+unityrs-dump = { version = "1.0.0", path = "../unityrs-dump" }
 
-unityrs-testkit = { path = "../unityrs-testkit", optional = true }
+unityrs-testkit = { version = "1.0.0", path = "../unityrs-testkit", optional = true }
 
 [features]
 # The engine's official test hooks (`docs/plans/batch.md` 2.11), read from

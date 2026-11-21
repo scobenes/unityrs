@@ -3,12 +3,14 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.0.1"
+version = "1.0.0"
 edition = "2024"
 rust-version = "1.99"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/scobenes/unityrs"
 authors = ["Scott Benes <scobenes@gmail.com>"]
+# The repository README, which cargo copies into each package that inherits it.
+readme = "README.md"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

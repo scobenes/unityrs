@@ -7,13 +7,19 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+readme.workspace = true
+keywords = ["unity", "animation", "mecanim", "gltf", "gamedev"]
+categories = ["game-development", "graphics"]
+# The package carries the code and its notices; tests, fixtures and
+# examples stay in the repository.
+include = ["/src/**", "/LICENSE-*", "/NOTICE-*"]
 
 [dependencies]
-unityrs-core = { path = "../unityrs-core" }
-unityrs-scene = { path = "../unityrs-scene" }
+unityrs-core = { version = "1.0.0", path = "../unityrs-core" }
+unityrs-scene = { version = "1.0.0", path = "../unityrs-scene" }
 # Python 3.15.2's compensated float sum, which freeze v8's body model
 # was fitted under (a PSF-2.0 port, in a crate of its own).
-unityrs-pysum = { path = "../unityrs-pysum" }
+unityrs-pysum = { version = "1.0.0", path = "../unityrs-pysum" }
 
 [dev-dependencies]
 serde_json = "=1.0.154"

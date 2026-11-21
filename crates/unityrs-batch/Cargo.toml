@@ -8,16 +8,22 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+readme.workspace = true
+keywords = ["unity", "assetbundle", "batch", "extraction", "s3"]
+categories = ["game-development"]
+# The package carries the code and its notices; tests, fixtures and
+# examples stay in the repository.
+include = ["/src/**", "/LICENSE-*", "/NOTICE-*"]
 
 [dependencies]
 # The core's `LimitKind`, which docs/BATCH_SPEC.md 9.3's table maps, and
 # `heap_cost`, the counting allocator's unit.
-unityrs-core = { path = "../unityrs-core" }
+unityrs-core = { version = "1.0.0", path = "../unityrs-core" }
 # The key templates and the key rules (docs/BATCH_SPEC.md 2.1 to 2.3),
 # which validation checks a spec's templates and literal keys with: one
 # copy, the cutter's.
-unityrs-export = { path = "../unityrs-export", features = ["gltf"] }
-unityrs-gltf = { path = "../unityrs-gltf" }
+unityrs-export = { version = "1.0.0", path = "../unityrs-export", features = ["gltf"] }
+unityrs-gltf = { version = "1.0.0", path = "../unityrs-gltf" }
 # The spec's order-preserving tree is built by a serde `Visitor` over
 # serde_json's parser (spec/parse), which keeps its recursion limit. Both
 # already in the lock. `float_roundtrip` reads a number as the nearest
