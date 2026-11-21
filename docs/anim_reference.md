@@ -617,7 +617,9 @@ root and conflicting generic writers, those before the slots it plays
 (locomotion, IK, translation DOFs, additive pose, body slots, muscle axes),
 the slots before the Avatar settings that act on them (twist and stretch,
 only where the clip animates a bone the setting redistributes or
-lengthens), and those before the clip's own settings and its root basis.
+lengthens, and between them any limb-twist muscle, at any setting, as
+`unsupported_humanoid_limb_twist`), and those before the clip's own
+settings and its root basis.
 A clip with none of these refuses as `unsupported_humanoid_playback`,
 since positive playback is not built.
 The Rust test `recorded_humanoid_refusals` (`UNITYRS_ANIM_HUMANOID`,

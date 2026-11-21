@@ -591,6 +591,7 @@ fn humanoid_refusals_are_glb_skips() {
         "unsupported_humanoid_hierarchy",
         "unsupported_humanoid_axes",
         "unsupported_humanoid_twist",
+        "unsupported_humanoid_limb_twist",
         "unsupported_humanoid_avatar_setting",
         "unsupported_humanoid_clip_settings",
         "unsupported_humanoid_root_basis",

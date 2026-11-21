@@ -77,6 +77,7 @@ pub enum AnimError {
     UnsupportedHumanoidHierarchy(usize),
     UnsupportedHumanoidAxes(usize),
     UnsupportedHumanoidTwist(&'static str),
+    UnsupportedHumanoidLimbTwist(usize),
     UnsupportedHumanoidAvatarSetting(&'static str),
     UnsupportedHumanoidClipSettings(&'static str),
     UnsupportedHumanoidRootBasis(&'static str),
@@ -364,6 +365,9 @@ impl fmt::Display for AnimError {
             Self::UnsupportedHumanoidAxes(bone) => write!(f, "unsupported_humanoid_axes({bone})"),
             Self::UnsupportedHumanoidTwist(field) => {
                 write!(f, "unsupported_humanoid_twist({field})")
+            }
+            Self::UnsupportedHumanoidLimbTwist(muscle) => {
+                write!(f, "unsupported_humanoid_limb_twist({muscle})")
             }
             Self::UnsupportedHumanoidAvatarSetting(field) => {
                 write!(f, "unsupported_humanoid_avatar_setting({field})")

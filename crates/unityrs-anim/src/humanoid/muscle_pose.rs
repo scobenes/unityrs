@@ -46,6 +46,10 @@
 //! here. The Python reference also returns `None` for it, as it does for
 //! an axis past z or a zero quaternion.
 //!
+//! The equation is not Unity's for a limb-twist muscle: on twist-0 rigs
+//! Unity carries those twists down the limb, so a clip curving one refuses
+//! (`LIMB_TWIST_MUSCLES`, URS-42).
+//!
 //! Nothing here plays a muscle yet: every humanoid clip still refuses, and
 //! the release gate's table (`gate.rs`) is empty. Which bones the equation
 //! holds for is measured by the agreement check against Unity's recordings

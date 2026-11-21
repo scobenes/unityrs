@@ -47,6 +47,7 @@ pub(crate) fn is_glb_skip(reason: &str) -> bool {
             | "unsupported_humanoid_hierarchy"
             | "unsupported_humanoid_axes"
             | "unsupported_humanoid_twist"
+            | "unsupported_humanoid_limb_twist"
             | "unsupported_humanoid_avatar_setting"
             | "unsupported_humanoid_clip_settings"
             | "unsupported_humanoid_root_basis"

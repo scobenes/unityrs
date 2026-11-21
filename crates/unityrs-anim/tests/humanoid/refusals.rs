@@ -3,7 +3,7 @@
 //! muscle of an absent optional bone, a generic writer off the skeleton.
 use super::{SPINE, file, issue, refusal, refusal_on};
 use unityrs_anim::{
-    humanoid::{dropped_muscles, rig_avatar},
+    humanoid::{self, dropped_muscles, rig_avatar},
     read_clip,
 };
 use unityrs_core::limits::Meter;
@@ -322,6 +322,53 @@ fn a_dense_grid_needs_a_finite_positive_rate_and_finite_body_values() {
 
 /// Each case carries two triggers, of one stage and the next, and refuses
 /// as the earlier: swapping any two adjacent stages fails a case.
+#[test]
+fn every_limb_twist_curve_refuses_at_any_twist_setting() {
+    // URS-42: at twist 0 Unity turns none of these muscles' own bones, so
+    // the neutral setting admits no limb-twist curve.
+    assert_eq!(
+        humanoid::LIMB_TWIST_MUSCLES,
+        [23, 25, 27, 31, 33, 35, 41, 43, 50, 52]
+    );
+    for muscle in humanoid::LIMB_TWIST_MUSCLES {
+        let dof = 42 + u32::try_from(muscle).unwrap();
+        let expected = format!("unsupported_humanoid_limb_twist({muscle})");
+        assert_eq!(refusal(&Rig::default(), h::clip(&[dof], &[])), expected);
+        assert_eq!(
+            refusal(&Rig::default(), h::clip(&[42, dof, HAND], &[])),
+            expected
+        );
+        // A setting that acts on another limb does not let it through.
+        let elsewhere = rig(|r| r.stretch = [0., 0., 0.05]);
+        assert!(refusal(&elsewhere, h::clip(&[dof], &[])).starts_with("unsupported_humanoid_"));
+        assert_ne!(
+            refusal(&elsewhere, h::clip(&[dof], &[])),
+            "unsupported_humanoid_playback"
+        );
+    }
+    // The Spine, Chest and UpperChest twists are no limb twist.
+    assert_eq!(
+        refusal(&Rig::default(), h::clip(&[42 + 2, 42 + 5], &[])),
+        "unsupported_humanoid_playback"
+    );
+    // A limb twist refuses before the stretch acting on its limb.
+    assert_eq!(
+        refusal(
+            &rig(|r| r.stretch = [0.05, 0., 0.]),
+            h::clip(&[42 + 43, FOREARM], &[])
+        ),
+        "unsupported_humanoid_limb_twist(43)"
+    );
+    // A twist setting off neutral on the animated limb refuses first.
+    assert_eq!(
+        refusal(
+            &rig(|r| r.twist = [0.5, 0., 0., 0.]),
+            h::clip(&[42 + 41], &[])
+        ),
+        "unsupported_humanoid_twist(m_ArmTwist)"
+    );
+}
+
 #[test]
 fn adjacent_triggers_refuse_as_the_earlier_stage() {
     let writer = [h::crc32(b"Hips/Spine")];

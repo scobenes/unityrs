@@ -305,6 +305,14 @@ class CauseTests(unittest.TestCase):
         self.assertIn("unsupported_humanoid_twist(m_ArmTwist)",
                       self.causes(avatar=twist, clip=rig_clip((42, ARM_TWIST))))
 
+    def test_a_limb_twist_muscle_is_a_cause_at_any_twist_setting(self):
+        # URS-42: the runtime refuses every limb-twist curve, the neutral twist setting's included.
+        cause = f"unsupported_humanoid_limb_twist({ARM_TWIST - 42})"
+        self.assertNotIn(cause, self.causes())
+        self.assertIn(cause, self.causes(clip=rig_clip((42, ARM_TWIST))))
+        self.assertIn(cause, self.causes(avatar=rig_avatar(twist=0.5), clip=rig_clip((42, ARM_TWIST))))
+        self.assertFalse([c for c in self.causes(clip=rig_clip((42, 42 + 2))) if "limb_twist" in c])
+
     def test_a_generic_writer_off_the_skeleton_is_not_a_conflict(self):
         entry = qualify(baseline=False, clip=rig_clip(writers=("Hips/Prop",)))
         self.assertEqual(entry["generic_writers"], [])
