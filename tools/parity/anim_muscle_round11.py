@@ -9,7 +9,9 @@ case table (`anim_fixture_round11.ROUND11_CASES`) lists them: 4 sweeps, 25 refus
 in-scope full-body clips. A run declares round 11 in `round.json`. Each run's required cases are
 this inventory together with any full-body clip its `run.json` lists, so neither the inventory
 nor the run can drop one unseen. Each must be recorded; `anim_muscle_pose.py agree` fails
-otherwise. No round 11 rig is a hold-out rig.
+otherwise. No round 11 rig is a hold-out rig. Only an in-scope sample confirms a required case: one on an
+Avatar with a non-neutral twist setting is refusal evidence (`anim_muscle_pose.refusal_reason`, the plan's
+B5a (g)), and every round 11 rig's are neutral.
 """
 
 import sys

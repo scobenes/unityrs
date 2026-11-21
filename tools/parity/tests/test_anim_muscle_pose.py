@@ -351,6 +351,35 @@ class FailureTests(unittest.TestCase):
         self.assertEqual(self.agree(dict(document, entries=[document["entries"][0], dict(turned, editor="6000")]))[0],
                          1)
 
+    def test_scope_is_the_avatars_twist_configuration(self):
+        neutral = {field: 0. for field in qualify.TWIST}
+        refusals = {"humanoid-twist-refusal": "unsupported_humanoid_twist"}
+        self.assertIsNone(pose.refusal_reason("body-probes-muscles-compact", neutral, refusals))
+        for field in qualify.TWIST:
+            self.assertEqual(pose.refusal_reason("x", dict(neutral, **{field: .5}), refusals),
+                             "unsupported_humanoid_twist")
+        self.assertEqual(pose.refusal_reason("humanoid-twist-refusal", neutral, refusals), "unsupported_humanoid_twist")
+        with self.assertRaisesRegex(ValueError, "lacks a twist setting"):
+            pose.refusal_reason("x", {}, refusals)
+
+    def test_a_twist_sample_never_decides_confirmation(self):
+        turned = AgreementTests.case(self, math.radians(.5))["entries"][0]
+        document = self.document(required={"2022": ["x"], "6000": ["x", "twisted"]})
+        # A limb twist on a non-neutral twist Avatar, outside its bound: refusal evidence, reported apart.
+        twisted = dict(turned, editor="6000", case="twisted", confirmation=True, refusal=True,
+                       refusal_reason="unsupported_humanoid_twist")
+        document["entries"].append(twisted)
+        self.assertEqual(pose.agreement(document, confirmation=True), {})
+        self.assertEqual(pose.agreement(document, True)[("6000", "Spine")][3], 20)
+        # It cannot stand in for a required case either: only in-scope samples confirm one.
+        self.assertEqual(pose.failures(document),
+                         ["Editor 6000 compares no sample of 1 required case(s): twisted"])
+        document["required"]["6000"] = ["x"]
+        self.assertEqual(pose.failures(document), [])
+        # The same failure in scope (a neutral Avatar, limb twists included) fails confirmation.
+        document["entries"][-1] = dict(twisted, refusal=False, refusal_reason=None)
+        self.assertEqual(pose.failures(document), ["confirmation samples outside their bound: 6000 Spine in 20"])
+
     def test_a_missing_required_case_fails(self):
         document = self.document(missing={"2022": [], "6000": ["body-probes-face"]})
         self.assertEqual(pose.failures(document), ["Editor 6000's runs lack 1 required case(s): body-probes-face"])

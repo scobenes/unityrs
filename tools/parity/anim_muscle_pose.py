@@ -352,6 +352,7 @@ def cases(unityrs, folders):
                 else:
                     sampled.append(clip_values(doc, sample, names))
             human = runs.human_of(avatar_of(run, doc))
+            reason = refusal_reason(case, human, REFUSALS)
             skeleton = human["m_Skeleton"].get("data", human["m_Skeleton"])
             bones = capture["humanoid"]["bones"]
             for bone in sorted({row["bone"] for row in muscles}):
@@ -379,7 +380,8 @@ def cases(unityrs, folders):
                         seen.add(key)
                         rows.append(vector_row(rest, axes, values, recorded, [value_errors[m] for m in ordinals]))
                 entries.append(dict(editor=editor, case=case, bone=bone, name=bones[bone]["name"],
-                                    playback=playback, refusal=case in REFUSALS, confirmation=confirmation,
+                                    playback=playback, refusal=reason is not None, refusal_reason=reason,
+                                    confirmation=confirmation,
                                     axes=axes_row(axes),
                                     rest=f32_hexes(rest), vectors=rows))
                 generated.setdefault((editor, bone, json.dumps(axes_row(axes))), (axes, rest))
@@ -389,6 +391,21 @@ def cases(unityrs, folders):
     return dict(format=FORMAT, kind="cases", reference=REFERENCE, muscle_axes=list(MUSCLE_AXES),
                 required={editor: sorted(cases) for editor, cases in sorted(required.items())},
                 missing={editor: sorted(cases) for editor, cases in sorted(missing.items())}, entries=entries)
+
+
+def refusal_reason(case, human, refusals):
+    """Why a case's samples are refusal evidence, or None when they are in B5a's scope. B5a claims all 95 muscles,
+    limb twists included, on Avatars whose four twist settings are neutral (0, `humanoid::NEUTRAL_TWIST`): the
+    runtime refuses a clip on any other Avatar that animates a twisted limb (`unsupported_humanoid_twist`), and
+    Unity spreads a limb's twist over its neighbours there, which one bone's equation does not model. A coverage
+    refusal case (anim_fixture_coverage.REFUSALS) is refusal evidence too."""
+    from anim_humanoid_qualify import TWIST
+
+    if case in refusals:
+        return refusals[case]
+    values = [human.get(field) for field in TWIST]
+    replay.require(all(type(v) in (int, float) for v in values), f"{case}: the Avatar lacks a twist setting")
+    return None if all(v == 0 for v in values) else "unsupported_humanoid_twist"
 
 
 def avatar_node(human, bone):
@@ -406,9 +423,9 @@ def avatar_node(human, bone):
 def agreement(document, refusal=False, confirmation=False):
     """{(editor, bone name): (worst angle, its bound, samples, samples outside, rows reference 2 changes from
     reference 1, samples outside under reference 1)} over recorded vectors: acceptance's (rounds 1 to 10), with
-    `confirmation` round 11's, or with `refusal` the refusal cases' of any round (anim_fixture_coverage.REFUSALS:
-    playback B5a must refuse, such as limb twist, which Unity spreads over neighbouring bones), reported apart
-    and never part of acceptance or confirmation."""
+    `confirmation` round 11's, or with `refusal` the refusal evidence of any round (`refusal_reason`: a coverage
+    refusal case, or any case on an Avatar with a non-neutral twist setting, whose twist Unity spreads over
+    neighbouring bones), reported apart and never part of acceptance or confirmation, whether it agrees or not."""
     result = {}
     for entry in document["entries"]:
         if entry.get("refusal", False) != refusal or not refusal and entry.get("confirmation", False) != confirmation:
@@ -456,8 +473,9 @@ def failures(document):
         if cases:
             found.append(f"Editor {editor}'s runs lack {len(cases)} required case(s): " + ", ".join(cases[:20]))
     for editor, cases in sorted(document["required"].items()):
+        # Only an in-scope sample confirms a required case; refusal evidence never does.
         compared = {entry["case"] for entry in document["entries"] if entry["editor"] == editor
-                    and any("recorded" in row for row in entry["vectors"])}
+                    and not entry.get("refusal", False) and any("recorded" in row for row in entry["vectors"])}
         lacking = sorted(set(cases) - compared)
         if lacking:
             found.append(f"Editor {editor} compares no sample of {len(lacking)} required case(s): "
