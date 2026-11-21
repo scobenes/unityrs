@@ -319,6 +319,18 @@ def check_run_files(view):
     return run, statuses, sorted(lacking)
 
 
+def muscle_curves(case, row):
+    """{Animator muscle property: (key times, values)} a clip case's built clip compiles: the tables' muscle curves
+    (anim_round12_tables.expected_curves, each Linear) as floats, its body and motion curves left out."""
+    import anim_round12_tables as r12
+
+    variant = None if row["family"] == "subset" else {name: v for name, _, _, v, _ in r12.full_clips()}[
+        case.removesuffix("-offset")]
+    return {prop: (tuple(map(r12._value, times)), tuple(map(r12._value, values)))
+            for prop, (times, values, _, mode) in r12.expected_curves(row, tables()[0], variant).items()
+            if mode == "Linear"}
+
+
 def check_clip(case, row, capture, clip):
     """A clip case's built clip: exactly its case's muscles compiled, each slot its own binding's through
     m_IndexArray, each within f32 rounding of the authored curve, and a subset clip's value at each key the
@@ -327,9 +339,8 @@ def check_clip(case, row, capture, clip):
     import anim_round12_tables as r12
 
     names = [muscle["name"] for muscle in capture["capture"]["humanoid"]["muscles"]]
-    replay.require(len(names) == 95 and all(names[r["ordinal"]] == r["name"] for r in tables()[0]["names"]),
-                   f"{case}: the capture's muscle names are not HumanTrait's")
-    curves = r12.expected_curves(row, names, tables()[0])
+    replay.require(names == r12.humantrait_order(), f"{case}: the capture's muscle names are not HumanTrait's")
+    curves = muscle_curves(case, row)
     tracks = clips.compiled_muscles(case, clip, curves, names)
     if row["family"] == "subset":
         from anim_fixture_full import muscle_property

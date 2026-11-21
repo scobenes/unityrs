@@ -4,7 +4,9 @@ The builder reads the document from the C# file and re-derives its schedules fro
 the committed C# file to be byte-identical to the generator's output, its pieces to concatenate to the canonical
 document, and the document to be what the twist tables, B5a's sweeps and round 11's clips give. A run's authored.json
 (the builder's curves, as it authored them) is checked against the tables by `check_authored`: a run authoring what
-the tables say passes, and a wrong key value, another interpolation, or a limb twist back in a twin is a problem."""
+the tables say passes, and a wrong key value, another interpolation, a weighted key, another tangent mode, a duplicate,
+missing or extra binding, a wrong body curve, or a limb twist back in a twin is a problem. The tables carry the
+curves themselves, so the committed C# file pins their values and slopes."""
 
 import hashlib
 import json
@@ -18,7 +20,7 @@ import anim_fixture_round11 as r11  # noqa: E402
 import anim_muscle_confirm as confirm  # noqa: E402
 import anim_round12_tables as r12  # noqa: E402
 import anim_twist_tables as tables  # noqa: E402
-from anim_muscle_confirm import builder_muscles  # noqa: E402
+from anim_fixture_full import full_groups  # noqa: E402
 from anim_fixture_muscles import LIMB_TWISTS, groups, muscle_vectors  # noqa: E402
 
 
@@ -127,18 +129,11 @@ class DocumentTests(unittest.TestCase):
                                  list(confirm.clip_times(confirm.clip_keys(info["rig"], info["variant"]))))
 
 
-def humantrait_names(doc):
-    """95 muscle names with the tables' limb muscles at their HumanTrait ordinals, the rest in the builder's order."""
-    names = [None] * 95
-    for row in doc["names"]:
-        names[row["ordinal"]] = row["name"]
-    rest = iter(name for name in builder_muscles() if name not in names)
-    return [name if name is not None else next(rest) for name in names]
-
-
 def authored(doc, names):
-    """authored.json as a run authoring the tables' curves (Linear tangents) writes it."""
+    """authored.json as a run authoring the tables' curves writes it: muscle curves on Linear tangents, body and
+    motion curves on PolyLine's (Free) tangents, every key unweighted."""
     rows = [row for row in doc["cases"] if row["bindings"]]
+    variants = {name: variant for name, _, _, variant, _ in r12.full_clips()}
     clips, done = [], set()
     for row in rows:
         if row["name"] in done:
@@ -147,16 +142,14 @@ def authored(doc, names):
                                  else [])
         done |= set(cases)
         bindings = []
-        for prop, (times, values) in sorted(r12.expected_curves(row, names, doc).items()):
-            slopes = [r12.f32(r12.f32(values[i + 1] - values[i]) / r12.f32(times[i + 1] - times[i]))
-                      for i in range(len(times) - 1)]
-            bindings.append(dict(path="", type="UnityEngine.Animator", property=prop,
-                                 times=[r12.bits(t) for t in times], values=[r12.bits(v) for v in values],
-                                 in_tangents=[r12.bits(t) for t in [0.] + slopes],
-                                 out_tangents=[r12.bits(t) for t in slopes + [0.]]))
-        bindings.append(dict(path="", type="UnityEngine.Animator", property="RootT.x", times=[], values=[],
-                             in_tangents=[], out_tangents=[]))
-        clips.append(dict(clip=row["name"], cases=cases, bindings=bindings))
+        for prop, (times, values, slopes, mode) in sorted(r12.expected_curves(row, doc, variants.get(row["name"])).items()):
+            slopes = slopes or r12.slope_bits([f32(t) for t in times], [f32(v) for v in values])
+            n = len(times)
+            bindings.append(dict(path="", type=r12.ANIMATOR, property=prop, times=list(times), values=list(values),
+                                 in_tangents=[r12.bits(0.)] + slopes, out_tangents=slopes + [r12.bits(0.)],
+                                 in_weights=[r12.UNWEIGHTED] * n, out_weights=[r12.UNWEIGHTED] * n,
+                                 weighted_modes=["None"] * n, left_modes=[mode] * n, right_modes=[mode] * n))
+        clips.append(dict(clip=row["name"], cases=cases, bindings=bindings, object_bindings=[]))
     return dict(format="unityrs.round12_authored", run_id="r", muscle_names=names, clips=clips)
 
 
@@ -164,7 +157,7 @@ class AuthoredTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.doc = r12.document()
-        cls.names = humantrait_names(cls.doc)
+        cls.names = r12.humantrait_order()
 
     def fresh(self):
         return json.loads(json.dumps(authored(self.doc, self.names)))
@@ -180,6 +173,7 @@ class AuthoredTests(unittest.TestCase):
         twin = {b["property"] for b in self.clip(run, "twin")["bindings"]}
         self.assertFalse(twin & {m for m, _ in LIMB_TWISTS})
         self.assertTrue({m for m, _ in LIMB_TWISTS} <= {b["property"] for b in self.clip(run, "twist-clip")["bindings"]})
+        self.assertTrue({"RootT.x", "RootQ.w"} <= {b["property"] for b in self.clip(run, "twist-clip")["bindings"]})
 
     def test_a_wrong_value_another_interpolation_or_a_twin_twist_is_a_problem(self):
         def broken(family, change):
@@ -187,19 +181,62 @@ class AuthoredTests(unittest.TestCase):
             change(self.clip(run, family))
             return r12.check_authored(run, self.doc)
 
+        def muscle(clip):
+            return next(b for b in clip["bindings"] if not b["property"].startswith(("Root", "Motion")))
+
         def value(clip):
-            curve = next(b for b in clip["bindings"] if b["property"] != "RootT.x")
+            curve = muscle(clip)
             curve["values"][3] = r12.bits(r12.f32(.5) if curve["values"][3] != r12.bits(.5) else .25)
 
         def constant(clip):
-            curve = next(b for b in clip["bindings"] if b["property"] != "RootT.x")
+            curve = muscle(clip)
             curve["out_tangents"] = [r12.bits(float("inf"))] * len(curve["out_tangents"])
+
+        def weighted(clip):
+            muscle(clip)["weighted_modes"][1] = "Both"
+
+        def mode(clip):
+            muscle(clip)["left_modes"][2] = "Free"
+
+        def root_mode(clip):
+            next(b for b in clip["bindings"] if b["property"] == "RootT.y")["right_modes"][0] = "Linear"
+
+        def twice(clip):
+            clip["bindings"].append(dict(muscle(clip)))
+
+        def root_value(clip):
+            curve = next(b for b in clip["bindings"] if b["property"] == "RootQ.y")
+            curve["values"][2] = r12.bits(r12.f32(r12._value(curve["values"][2]) + .001))
+
+        def no_root(clip):
+            clip["bindings"] = [b for b in clip["bindings"] if b["property"] != "RootT.z"]
+
+        def elsewhere(clip):
+            clip["bindings"].append(dict(muscle(clip), path="HumanoidRig/Hips", type="UnityEngine.Transform"))
+
+        def weight(clip):
+            muscle(clip)["out_weights"][1] = r12.bits(1 / 3)
+
+        def reference(clip):
+            clip["object_bindings"].append(dict(path="HumanoidRig", type="UnityEngine.MeshFilter", property="m_Mesh",
+                                                times=[r12.bits(0.)]))
+
+        def flipped(clip):
+            # An interior RootQ key at the other sign, its neighbours' tangents recomputed to match: the same keys
+            # up to sign, but playback between them takes the long way round.
+            curves = [b for b in clip["bindings"] if b["property"].startswith("RootQ.")]
+            for curve in curves:
+                curve["values"][2] = r12.bits(-r12._value(curve["values"][2]))
+                slopes = r12.slope_bits([f32(t) for t in curve["times"]], [f32(v) for v in curve["values"]])
+                curve["in_tangents"], curve["out_tangents"] = [r12.bits(0.)] + slopes, slopes + [r12.bits(0.)]
 
         def twist(clip):
             twin_rig = clip["bindings"][0]
             clip["bindings"].append(dict(twin_rig, property="Left Arm Twist In-Out"))
         for family, change in (("subset", value), ("subset", constant), ("twist-clip", value), ("twist-clip", constant),
-                               ("twin", twist)):
+                               ("subset", weighted), ("twist-clip", mode), ("twin", root_mode), ("subset", twice),
+                               ("twist-clip", root_value), ("twin", no_root), ("subset", elsewhere), ("twin", twist),
+                               ("subset", weight), ("twin", reference), ("twist-clip", flipped)):
             self.assertTrue(broken(family, change), (family, change.__name__))
         run = self.fresh()
         run["clips"].pop()
@@ -207,6 +244,31 @@ class AuthoredTests(unittest.TestCase):
         run = self.fresh()
         run["muscle_names"] = list(reversed(run["muscle_names"]))
         self.assertTrue(r12.check_authored(run, self.doc))
+
+    def test_the_tables_carry_the_curves_round_12_authors(self):
+        # The full-body muscle curves are full_groups' on every round 12 rig (an in-scope rig's values do not depend
+        # on the rig), the subset's its vectors, and the body curves anim_fixture_body's; each slope the f32 one.
+        from anim_fixture_body import BODY_PATH, BODY_TIMES
+
+        sets = {curve["name"]: curve for curve in self.doc["curves"]}
+        full = {row["property"]: row for row in sets["full"]["rows"]}
+        self.assertEqual([row["name"] for row in sets["full"]["rows"]], self.names)
+        self.assertEqual(sets["full"]["times"], [r12.bits(t) for t in BODY_TIMES])
+        for rig in sorted({row[2] for row in r12.full_clips()}):
+            for (prop, _, times, values), in full_groups(self.names, rig):
+                self.assertEqual(full[prop]["values"], [r12.bits(v) for v in values], (rig, prop))
+        for curve in sets.values():
+            times = [f32(t) for t in curve["times"]]
+            for row in curve["rows"]:
+                if "slopes" in row:
+                    self.assertEqual(row["slopes"], r12.slope_bits(times, [f32(v) for v in row["values"]]))
+        subset = self.sets_of("subset")
+        for row in sets["subset"]["rows"]:
+            name = full[row["property"]]["name"]
+            self.assertEqual(row["values"], [dict(zip(v["muscles"], v["bits"])).get(name, r12.bits(0.)) for v in subset])
+        self.assertEqual(sets["root"]["rows"][0]["values"], [r12.bits(p[0]) for p in BODY_PATH])
+        self.assertEqual({row["ordinal"]: row["name"] for row in self.doc["names"]},
+                         {m: n for m, n in enumerate(self.names) if n in tables.NAMES})
 
     def test_every_clip_case_names_its_binding_list(self):
         lists = {row["name"]: row["properties"] for row in self.doc["bindings"]}

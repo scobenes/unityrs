@@ -224,6 +224,8 @@ static partial class UnityrsFixtureBuilder
         string staging = output + ".b-" + shortId;
         string stagedLog = Path.Combine(staging, LogFile);
         bool publishing = false, preserveStaging = variant.KeepStaging;
+        // Where the run was published, once it is: a later failure names it, not the renamed staging folder.
+        string published = null;
         string[] failures;
         string finished = null;
         // A run with failures never replaces an earlier output: it publishes beside it, under its own name.
@@ -248,26 +250,44 @@ static partial class UnityrsFixtureBuilder
                 Application.logMessageReceived += UnityLog;
                 try
                 {
-                    Require(!EditorApplication.isPlayingOrWillChangePlaymode && !AnimationMode.InAnimationMode(),
-                        "Exit Play Mode and animation preview, then try again.");
-                    Require(variant.PipelineReady(), variant.PipelineMessage);
-                    CheckOwned(generated);
-                    Folder(Assets);
-                    WriteMarker(generated, run.Stamp);
-
                     var report = new RunReport(Log, variant.Cases);
                     variant.AddDeferred(report);
-                    Progress("Preparing fixtures", .05f);
-                    var build = PrepareInFixtureScene(report, run.Stamp, variant.Prepare, ref preserveStaging);
-                    BuildAndCapture(build, report, staging, run, target, variant.Record, Log, variant.BodyOnly);
-                    // The last step (round 12's inventory) cannot stop the manifest from being written.
+                    // A run with a last step (round 12) writes it and run.json even when a preflight check, building
+                    // or recording stops it, then fails: its staging folder is kept and nothing is published.
+                    Exception stopped = null;
+                    try
+                    {
+                        Require(!EditorApplication.isPlayingOrWillChangePlaymode && !AnimationMode.InAnimationMode(),
+                            "Exit Play Mode and animation preview, then try again.");
+                        Require(variant.PipelineReady(), variant.PipelineMessage);
+                        CheckOwned(generated);
+                        Folder(Assets);
+                        WriteMarker(generated, run.Stamp);
+                        Progress("Preparing fixtures", .05f);
+                        var build = PrepareInFixtureScene(report, run.Stamp, variant.Prepare, ref preserveStaging);
+                        BuildAndCapture(build, report, staging, run, target, variant.Record, Log, variant.BodyOnly);
+                    }
+                    catch (Exception error) when (variant.Finish != null)
+                    {
+                        stopped = error;
+                        preserveStaging = true;
+                    }
+                    // A last step (round 12's inventory, authored.json and round.json) that fails fails the run
+                    // after run.json is written: the staging folder is kept, and nothing is published.
+                    string lastStep = null;
                     try { finished = variant.Finish?.Invoke(report, staging, run); }
                     catch (Exception error)
                     {
                         Log("ERROR in the last step: " + error.Message);
-                        finished = "The last step failed: " + error.Message + " See build.log.";
+                        lastStep = error.Message;
+                        preserveStaging = true;
                     }
                     failures = report.Write(staging, projectPath, run);
+                    if (stopped != null)
+                        throw new InvalidOperationException(stopped.Message + (lastStep == null ? "" : " The last step failed too: "
+                            + lastStep) + " Nothing was published.", stopped);
+                    if (lastStep != null)
+                        throw new InvalidOperationException("The last step failed: " + lastStep + " Nothing was published.");
                     if (failures.Length > 0 && Directory.Exists(output))
                     {
                         destination = output + "-partial-" + shortId;
@@ -287,8 +307,17 @@ static partial class UnityrsFixtureBuilder
             }
             Progress("Publishing results", .98f);
             publishing = true;
-            Publish(staging, destination);
+            published = Publish(staging, destination, replace: failures.Length == 0);
             publishing = false;
+            shown = Path.Combine(Path.GetDirectoryName(relative), Path.GetFileName(published));
+            // The log's last line: where the run is now, which paths above under the staging folder have moved to.
+            try
+            {
+                File.AppendAllText(Path.Combine(published, LogFile), "Published to " + shown + ": paths above under "
+                    + Path.GetFileName(staging) + " are under it now.\n");
+            }
+            catch (IOException logError) { Debug.LogException(logError); }
+            catch (UnauthorizedAccessException logError) { Debug.LogException(logError); }
             EditorUtility.ClearProgressBar();
             string location = "Unity " + version + " / " + target + "\n\nOutput in your project folder:\n" + shown
                 + (finished == null ? "" : "\n\n" + finished);
@@ -314,6 +343,15 @@ static partial class UnityrsFixtureBuilder
             EditorUtility.ClearProgressBar();
             Debug.LogException(error);
             string diagnostic = "See the Unity Console.";
+            if (published != null)
+            {
+                diagnostic = "The run was published to this folder in your project:\n" + shown;
+                try { File.AppendAllText(Path.Combine(published, LogFile), "ERROR " + error.Message + "\n" + diagnostic + "\n"); }
+                catch (IOException logError) { Debug.LogException(logError); }
+                catch (UnauthorizedAccessException logError) { Debug.LogException(logError); }
+                EditorUtility.DisplayDialog("unityrs fixtures published", error.Message + "\n\n" + diagnostic, "OK");
+                return;
+            }
             if (publishing || preserveStaging)
             {
                 diagnostic = publishing
@@ -557,8 +595,26 @@ static partial class UnityrsFixtureBuilder
         }
     }
 
-    static void Publish(string staging, string output)
+    // The folder the run is published to. Only a run without failures may replace an earlier output. One with
+    // failures never moves anything aside or deletes: Directory.Move refuses a destination that exists, so a name
+    // taken by the time of the move gives way to the next free one (<output>-2, -3, ...).
+    static string Publish(string staging, string output, bool replace)
     {
+        if (!replace)
+        {
+            for (int n = 1; n <= 100; n++)
+            {
+                string fresh = n == 1 ? output : output + "-" + n;
+                if (Directory.Exists(fresh)) continue;
+                try
+                {
+                    MoveWithRetry(staging, fresh);
+                    return fresh;
+                }
+                catch (IOException) when (Directory.Exists(fresh) && Directory.Exists(staging)) { }
+            }
+            throw new IOException("No free folder name to publish " + Path.GetFileName(output) + " under; the run stays staged.");
+        }
         CheckOwned(output);
         string prior = staging + ".previous";
         if (Directory.Exists(output)) MoveWithRetry(output, prior);
@@ -582,6 +638,7 @@ static partial class UnityrsFixtureBuilder
             catch (IOException error) { Debug.LogException(error); }
             catch (UnauthorizedAccessException error) { Debug.LogException(error); }
         }
+        return output;
     }
 
     static void MoveWithRetry(string source, string destination)

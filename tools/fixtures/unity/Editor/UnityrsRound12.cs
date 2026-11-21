@@ -19,7 +19,7 @@ using UnityEngine.SceneManagement;
 // - sets each Avatar's four twist settings (HumanDescription's upperArmTwist, lowerArmTwist, upperLegTwist and
 //   lowerLegTwist, as UnityrsCoverageFixtures.cs does) and logs them, with their f32 bits, as built;
 // - records motion checks as diagnostics beside each capture (UnityrsRound12Recording.cs);
-// - ends with inventory.json (every table case's capture, sample count and times) and round.json (the round, the
+// - ends with inventory.json (every table case's capture, sample count, times and finite poses) and round.json (the round, the
 //   run, the tables' sha256 and digest, and the sha256 of this Editor folder's sources).
 static partial class UnityrsFixtureBuilder
 {
@@ -172,6 +172,9 @@ static partial class UnityrsFixtureBuilder
     static void BuildRound12()
     {
         var target = EditorUserBuildSettings.activeBuildTarget;
+        // Nothing from an earlier run reaches this one's authored.json or inventory, even if it stops before preparing.
+        round12Clips = new List<R12Clip>();
+        round12Bones = new Dictionary<string, string[]>(StringComparer.Ordinal);
         Run(new Variant {
             Name = "round12", Root = Round12Output, Folder = target.ToString(), Target = target, Record = true,
             BodyOnly = true, KeepStaging = true, Cases = Round12.cases.Select(row => row.name).ToArray(),
@@ -184,6 +187,7 @@ static partial class UnityrsFixtureBuilder
         var tables = Round12;
         var build = new Build();
         round12Clips = new List<R12Clip>();
+        round12Bones = new Dictionary<string, string[]>(StringComparer.Ordinal);
         round12Log = report.Log;
         report.Log(DefaultsLine());
         // The full-body clip cases: each in-scope rig as a twist rig and a twin, whose ClipCases must be the tables'.
@@ -207,6 +211,8 @@ static partial class UnityrsFixtureBuilder
         foreach (var (_, spec) in clipRigs)
             report.Prepare(build, "Prepare " + ClipBundle(spec), ClipCases(spec).ToArray(), () => BuildBodyClips(build, report, spec));
         var prepared = new HashSet<string>(build.Replays.Select(replay => replay.OutputName), StringComparer.Ordinal);
+        foreach (var replay in build.Replays.Where(replay => replay.Body?.Mapped != null))
+            round12Bones[replay.OutputName] = replay.Body.Mapped;
         report.FailUnreached(tables.cases.Select(row => row.name).Where(name => !prepared.Contains(name)),
             "No preparation step produced this round 12 case.");
         return build;

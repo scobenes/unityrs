@@ -5,12 +5,14 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
+using UnityEngine;
 
 // Round 12's recorder diagnostics (round 12 design v4 section 3). A round 12 case (ReplayCase.Diagnose) records
 // the own-bone motion check, the Spine 1 degree and endpoint checks, the scoped lateral and shoulder-hip checks and
 // a per-bone motion table as rows of <case>.diagnostics.json beside its capture: each a number, or null with a reason
 // where it is undefined (never NaN), and whether it passed. They never stop a capture from being written: the Spine
-// endpoint evaluations run only after it is (RunDeferred), and their failure is a row too. Every other case keeps
+// endpoint and turn checks (the source clip read with them) run only after it is (RunDeferred), and a failure of
+// theirs is a row too. Every other case keeps
 // them fatal, as before (Check is Need there). Structural checks stay fatal for every case.
 public static partial class AnimReplayRecorder
 {
@@ -32,9 +34,17 @@ public static partial class AnimReplayRecorder
     static List<Diagnostic> diagnostics;
     static List<MotionRow> motion;
     static bool completed;
-    static Action deferred;
+    static List<(string check, Action run)> deferred;
 
     static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
+
+    // Quaternion.Angle clamps its dot product, so a nonfinite rotation would read as 0 degrees: NaN (undefined, so
+    // never passing) unless both rotations are finite.
+    static double FiniteAngle(Quaternion a, Quaternion b) =>
+        new[] { a.x, a.y, a.z, a.w, b.x, b.y, b.z, b.w }.All(value => Finite(value)) ? Quaternion.Angle(a, b) : double.NaN;
+
+    // A round 12 diagnostic that runs only after the capture is written.
+    static void Defer(string check, Action run) => deferred.Add((check, run));
 
     // A motion check: Need for every case but a round 12 one, a diagnostic row there.
     static void Check(bool passed, string check, int sample, double value, double limit, string message)
@@ -56,19 +66,22 @@ public static partial class AnimReplayRecorder
         diagnostics = fixture.Diagnose ? new List<Diagnostic>() : null;
         motion = fixture.Diagnose ? new List<MotionRow>() : null;
         completed = false;
-        deferred = null;
+        deferred = new List<(string check, Action run)>();
     }
 
-    // After the capture is written: the deferred endpoint checks, any failure of theirs a row.
+    // After the capture is written: the deferred checks, each on its own, any failure of theirs a row.
     static void RunDeferred()
     {
-        var action = deferred;
+        var actions = deferred;
         deferred = null;
-        if (action == null || diagnostics == null) return;
-        try { action(); }
-        catch (Exception error)
+        if (actions == null || diagnostics == null) return;
+        foreach (var (check, run) in actions)
         {
-            diagnostics.Add(new Diagnostic { check = "spine_endpoints", reason = "not evaluated: " + error.Message });
+            try { run(); }
+            catch (Exception error)
+            {
+                diagnostics.Add(new Diagnostic { check = check, reason = "not evaluated: " + error.Message });
+            }
         }
     }
 

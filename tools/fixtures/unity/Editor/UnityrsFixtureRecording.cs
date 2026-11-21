@@ -332,64 +332,76 @@ public static partial class AnimReplayRecorder
             return new Quaternion(Component(0), Component(1), Component(2), Component(3));
         }
 
-        // Evaluate the clip's own authored muscle values independently on the
-        // source rig: an in-scope full-body clip authors its own Spine curves,
-        // which differ from KnownHumanoidMuscles (anim_fixture_full.py).
-        // Compare local Spine rotations so root motion and placement do not
-        // change the endpoint being tested.
-        var authoredClip = AssetDatabase.LoadAssetAtPath<AnimationClip>(fixture.Clip);
-        Need(authoredClip != null, "Could not read the authored clip of " + name + ".");
-        Quaternion AuthoredRotation(float time)
-        {
-            Scene scene = EditorSceneManager.NewPreviewScene();
-            try
-            {
-                var anchor = EditorUtility.CreateGameObjectWithHideFlags("Authored Spine probe", HideFlags.HideAndDontSave);
-                SceneManager.MoveGameObjectToScene(anchor, scene);
-                var instance = UnityEngine.Object.Instantiate(prefab, anchor.transform, false);
-                var animator = At<Animator>(instance.transform, fixture.BindingAddress, 0);
-                animator.runtimeAnimatorController = null;
-                animator.applyRootMotion = false;
-                SampleMuscles(animator, UnityrsFixtureBuilder.AuthoredMuscles(authoredClip, time));
-                var bone = animator.GetBoneTransform(HumanBodyBones.Spine);
-                Need(bone != null && bone == instance.transform.Find(fixture.ProbePath), "Authored Avatar is missing the Spine probe.");
-                return bone.localRotation;
-            }
-            finally { EditorSceneManager.ClosePreviewScene(scene); }
-        }
-
         const float tolerance = .25f;
         var last = capture.samples[capture.samples.Length - 1];
         var neutral = Rotation(capture.samples[0]);
         var combined = Rotation(last);
-        // The authored endpoints, evaluated on preview instances. A round 12 case evaluates them after its capture
-        // is written (RunDeferred), at its clip's last sample (its subset clip's keys run to 7 s), as diagnostics.
+        // The authored endpoints, evaluated on preview instances. A round 12 case reads its source clip and evaluates
+        // them only after its capture is written (RunDeferred), at its clip's last sample (its subset clip's keys run
+        // to 7 s), as diagnostics.
         void Endpoints()
         {
+            // Evaluate the clip's own authored muscle values independently on the
+            // source rig: an in-scope full-body clip authors its own Spine curves,
+            // which differ from KnownHumanoidMuscles (anim_fixture_full.py).
+            // Compare local Spine rotations so root motion and placement do not
+            // change the endpoint being tested.
+            var authoredClip = AssetDatabase.LoadAssetAtPath<AnimationClip>(fixture.Clip);
+            Need(authoredClip != null, "Could not read the authored clip of " + name + ".");
+            Quaternion AuthoredRotation(float time)
+            {
+                Scene scene = EditorSceneManager.NewPreviewScene();
+                try
+                {
+                    var anchor = EditorUtility.CreateGameObjectWithHideFlags("Authored Spine probe", HideFlags.HideAndDontSave);
+                    SceneManager.MoveGameObjectToScene(anchor, scene);
+                    var instance = UnityEngine.Object.Instantiate(prefab, anchor.transform, false);
+                    var animator = At<Animator>(instance.transform, fixture.BindingAddress, 0);
+                    animator.runtimeAnimatorController = null;
+                    animator.applyRootMotion = false;
+                    SampleMuscles(animator, UnityrsFixtureBuilder.AuthoredMuscles(authoredClip, time));
+                    var bone = animator.GetBoneTransform(HumanBodyBones.Spine);
+                    Need(bone != null && bone == instance.transform.Find(fixture.ProbePath), "Authored Avatar is missing the Spine probe.");
+                    return bone.localRotation;
+                }
+                finally { EditorSceneManager.ClosePreviewScene(scene); }
+            }
+
             var expectedStart = AuthoredRotation(0);
             var expectedStop = AuthoredRotation(diagnostics == null ? 1 : (float)last.local);
             string endpoint = "Built Spine rotation differs from the authored endpoint pose in " + name + ".";
-            Check(Quaternion.Angle(neutral, expectedStart) <= tolerance, "spine_start", 0,
-                Quaternion.Angle(neutral, expectedStart), tolerance, endpoint);
-            Check(Quaternion.Angle(combined, expectedStop) <= tolerance, "spine_stop", capture.samples.Length - 1,
-                Quaternion.Angle(combined, expectedStop), tolerance, endpoint);
+            double start = FiniteAngle(neutral, expectedStart), stop = FiniteAngle(combined, expectedStop);
+            Check(start <= tolerance, "spine_start", 0, start, tolerance, endpoint);
+            Check(stop <= tolerance, "spine_stop", capture.samples.Length - 1, stop, tolerance, endpoint);
             if (diagnostics != null) return;
             editor.spine_start_f32 = Bits(expectedStart);
             editor.spine_stop_f32 = Bits(expectedStop);
         }
-        if (diagnostics == null) Endpoints();
-        else deferred = Endpoints;
         string moved = "Humanoid playback did not move the Spine at the authored probes for " + name + ".";
-        var middle = diagnostics == null ? capture.samples.Single(sample => sample.local == .5)
-            : capture.samples.FirstOrDefault(sample => sample.local == .5);
-        if (middle == null)
-            Check(false, "spine_turns", -1, double.NaN, 1, "no sample at local .5: " + moved);
+        void Turns()
+        {
+            var middle = diagnostics == null ? capture.samples.Single(sample => sample.local == .5)
+                : capture.samples.FirstOrDefault(sample => sample.local == .5);
+            if (middle == null)
+                Check(false, "spine_turns", -1, double.NaN, 1, "no sample at local .5: " + moved);
+            else
+            {
+                var single = Rotation(middle);
+                int index = Array.IndexOf(capture.samples, middle);
+                double first = FiniteAngle(neutral, single), second = FiniteAngle(single, combined);
+                Check(first > 1, "spine_turn_first", index, first, 1, moved);
+                Check(second > 1, "spine_turn_second", index, second, 1, moved);
+            }
+        }
+        if (diagnostics == null)
+        {
+            Endpoints();
+            Turns();
+        }
         else
         {
-            var single = Rotation(middle);
-            int index = Array.IndexOf(capture.samples, middle);
-            Check(Quaternion.Angle(neutral, single) > 1, "spine_turn_first", index, Quaternion.Angle(neutral, single), 1, moved);
-            Check(Quaternion.Angle(single, combined) > 1, "spine_turn_second", index, Quaternion.Angle(single, combined), 1, moved);
+            Defer("spine_endpoints", Endpoints);
+            Defer("spine_turns", Turns);
         }
         editor.spine_endpoint_tolerance_degrees = tolerance;
         clock.start.probe.value = capture.samples[0].pose.transforms[spine].rotation[clock.start.probe.component];

@@ -22,7 +22,7 @@ import anim_twist_seal as seal  # noqa: E402
 import scratch  # noqa: E402
 from anim_fixture_contract import ASSETS  # noqa: E402
 from anim_twist_witness import allowlisted  # noqa: E402
-from test_anim_round12_tables import authored, humantrait_names  # noqa: E402
+from test_anim_round12_tables import authored  # noqa: E402
 
 VERSIONS = {"2022": "2022.3.62f3", "6000": "6000.6.9f1"}
 RUN_IDS = {"2022": "a" * 32, "6000": "b" * 32}
@@ -58,7 +58,7 @@ def capture(case, run_id, version, data, bundle, times, fixture=None):
                     avatar_asset=fixture.avatar, mode=fixture.playback, binding_address="0", binding_component=0)
         doc = round12.tables()[0]
         body.update(playback=dict(api=replay.API[fixture.playback], clip_human_motion=True),
-                    humanoid=dict(muscles=[dict(name=name) for name in humantrait_names(doc)]))
+                    humanoid=dict(muscles=[dict(name=name) for name in r12tables.humantrait_order()]))
     return dict(spec=spec, capture=body)
 
 
@@ -142,7 +142,7 @@ class Runs:
     @classmethod
     def setUpClass(cls):
         doc = round12.tables()[0]
-        text = json.dumps(authored(doc, humantrait_names(doc)), indent=1) if cls.REAL else STUB
+        text = json.dumps(authored(doc, r12tables.humantrait_order()), indent=1) if cls.REAL else STUB
         cls.template = scratch.for_class(cls)
         for editor in VERSIONS:
             make_round12(cls.template / f"r12-{editor}", editor, text)
@@ -408,11 +408,11 @@ class ViewTests(Runs, unittest.TestCase):
 class ClipTests(unittest.TestCase):
     def tracks(self, row, change=None):
         """Dense compiled tracks equal to the case's authored curves, by muscle ordinal."""
-        names = humantrait_names(round12.tables()[0])
+        names = r12tables.humantrait_order()
         from anim_fixture_full import muscle_property
 
         ordinal = {muscle_property(name): m for m, name in enumerate(names)}
-        curves = r12tables.expected_curves(row, names, round12.tables()[0])
+        curves = round12.muscle_curves(row["name"], row)
         found = {ordinal[prop]: (False, [(clips.f32(t), (0., 0., 0., clips.f32(v))) for t, v in zip(*curve)])
                  for prop, curve in curves.items()}
         if change:
