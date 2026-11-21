@@ -86,6 +86,36 @@ class ReaderPublication(unittest.TestCase):
             second_attempted.set()
             env._lock, file._native = lock, native
 
+    def test_a_failed_read_releases_the_lock(self):
+        env = unityrs.Environment(_asset())
+        obj = env.objects[0]
+        file = obj.assets_file
+        natives = file._native, obj._native
+
+        class Failing:
+            def __init__(self, native, name):
+                self.native, self.name = native, name
+
+            def __getattr__(self, name):
+                if name == self.name:
+                    raise MemoryError(name)
+                return getattr(self.native, name)
+
+        file.__dict__.pop('_reader', None)
+        file._native = Failing(natives[0], 'tree_traversal')
+        obj._native = Failing(natives[1], 'parse_direct')
+        try:
+            with self.assertRaisesRegex(MemoryError, 'tree_traversal'):
+                obj.reader
+            self.assertFalse(env._lock._is_owned())
+            with self.assertRaisesRegex(MemoryError, 'parse_direct'):
+                obj.read_typetree()
+            self.assertFalse(env._lock._is_owned())
+        finally:
+            file._native, obj._native = natives
+        self.assertIs(obj.reader, file.reader)
+        self.assertFalse(env._lock._is_owned())
+
 
 if __name__ == '__main__':
     unittest.main()
