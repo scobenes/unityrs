@@ -143,10 +143,10 @@ public static partial class AnimReplayRecorder
             try { File.Move(staging, output); }
             catch (Exception error)
             {
-                // The complete capture stays where it was written, and the failure names it beside its destination,
-                // which stays true when the run's folder is published under another name.
-                throw new IOException("The capture was written but could not be moved to " + Path.GetFileName(output) + " ("
-                    + error.Message + "); it is kept beside it as " + Path.GetFileName(staging) + ".", error);
+                // The complete capture stays where it was written, and the failure names its folder. A fixture run
+                // published under another name says in its log where that folder's paths moved.
+                throw new IOException("The capture was written but could not be moved to " + output + " (" + error.Message
+                    + "); it is kept in " + Path.GetDirectoryName(staging) + " as " + Path.GetFileName(staging) + ".", error);
             }
         }
         finally

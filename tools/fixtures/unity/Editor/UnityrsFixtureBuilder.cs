@@ -224,6 +224,8 @@ static partial class UnityrsFixtureBuilder
         string staging = output + ".b-" + shortId;
         string stagedLog = Path.Combine(staging, LogFile);
         bool publishing = false, preserveStaging = variant.KeepStaging;
+        // Where the run was published, once it is: a later failure names it, not the renamed staging folder.
+        string published = null;
         string[] failures;
         string finished = null;
         // A run with failures never replaces an earlier output: it publishes beside it, under its own name.
@@ -295,8 +297,6 @@ static partial class UnityrsFixtureBuilder
                     // Only a recorded run is a round: a build-only run's replays are skipped, which completion refuses.
                     if (run.variant == "builtin" && variant.Record) WriteRound(staging, run.run_id);
                     Log(failures.Length == 0 ? "Finished." : "Finished with fixture errors: " + string.Join(", ", failures));
-                    // Paths in this log are inside the run's folder, which is published as this one.
-                    Log("Publishing to " + shown + ".");
                 }
                 catch (Exception error)
                 {
@@ -307,8 +307,17 @@ static partial class UnityrsFixtureBuilder
             }
             Progress("Publishing results", .98f);
             publishing = true;
-            Publish(staging, destination, replace: failures.Length == 0);
+            published = Publish(staging, destination, replace: failures.Length == 0);
             publishing = false;
+            shown = Path.Combine(Path.GetDirectoryName(relative), Path.GetFileName(published));
+            // The log's last line: where the run is now, which paths above under the staging folder have moved to.
+            try
+            {
+                File.AppendAllText(Path.Combine(published, LogFile), "Published to " + shown + ": paths above under "
+                    + Path.GetFileName(staging) + " are under it now.\n");
+            }
+            catch (IOException logError) { Debug.LogException(logError); }
+            catch (UnauthorizedAccessException logError) { Debug.LogException(logError); }
             EditorUtility.ClearProgressBar();
             string location = "Unity " + version + " / " + target + "\n\nOutput in your project folder:\n" + shown
                 + (finished == null ? "" : "\n\n" + finished);
@@ -334,6 +343,15 @@ static partial class UnityrsFixtureBuilder
             EditorUtility.ClearProgressBar();
             Debug.LogException(error);
             string diagnostic = "See the Unity Console.";
+            if (published != null)
+            {
+                diagnostic = "The run was published to this folder in your project:\n" + shown;
+                try { File.AppendAllText(Path.Combine(published, LogFile), "ERROR " + error.Message + "\n" + diagnostic + "\n"); }
+                catch (IOException logError) { Debug.LogException(logError); }
+                catch (UnauthorizedAccessException logError) { Debug.LogException(logError); }
+                EditorUtility.DisplayDialog("unityrs fixtures published", error.Message + "\n\n" + diagnostic, "OK");
+                return;
+            }
             if (publishing || preserveStaging)
             {
                 diagnostic = publishing
@@ -577,12 +595,27 @@ static partial class UnityrsFixtureBuilder
         }
     }
 
-    // Only a run without failures may replace an earlier output; one with failures publishes to a new folder only.
-    static void Publish(string staging, string output, bool replace)
+    // The folder the run is published to. Only a run without failures may replace an earlier output. One with
+    // failures never moves anything aside or deletes: Directory.Move refuses a destination that exists, so a name
+    // taken by the time of the move gives way to the next free one (<output>-2, -3, ...).
+    static string Publish(string staging, string output, bool replace)
     {
+        if (!replace)
+        {
+            for (int n = 1; n <= 100; n++)
+            {
+                string fresh = n == 1 ? output : output + "-" + n;
+                if (Directory.Exists(fresh)) continue;
+                try
+                {
+                    MoveWithRetry(staging, fresh);
+                    return fresh;
+                }
+                catch (IOException) when (Directory.Exists(fresh) && Directory.Exists(staging)) { }
+            }
+            throw new IOException("No free folder name to publish " + Path.GetFileName(output) + " under; the run stays staged.");
+        }
         CheckOwned(output);
-        Require(replace || !Directory.Exists(output),
-            "A run with failures never replaces an output, and " + Path.GetFileName(output) + " already exists.");
         string prior = staging + ".previous";
         if (Directory.Exists(output)) MoveWithRetry(output, prior);
         try { MoveWithRetry(staging, output); }
@@ -605,6 +638,7 @@ static partial class UnityrsFixtureBuilder
             catch (IOException error) { Debug.LogException(error); }
             catch (UnauthorizedAccessException error) { Debug.LogException(error); }
         }
+        return output;
     }
 
     static void MoveWithRetry(string source, string destination)
