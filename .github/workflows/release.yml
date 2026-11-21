@@ -1,6 +1,6 @@
 name: Release
 
-# Builds the `unityrs` Python wheels (abi3, Python 3.10+) and the sdist for a
+# Builds the `unityrs` Python wheels (abi3, Python 3.10+; `unityrs-py` on PyPI) and the sdist for a
 # version tag and publishes them to PyPI through trusted publishing: PyPI
 # trusts this workflow file in the `pypi` environment, so no token is stored.
 # A manual run is always a dry run: it builds and checks the distributions
@@ -161,7 +161,7 @@ jobs:
     # protects with required reviewers and a `v*` tag deployment rule.
     environment:
       name: pypi
-      url: https://pypi.org/project/unityrs/
+      url: https://pypi.org/project/unityrs-py/
     permissions:
       id-token: write
     steps:
