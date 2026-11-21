@@ -23,6 +23,19 @@ static partial class UnityrsFixtureBuilder
         public bool Tall, Noncoplanar, Armature, ScaledAnimator, Full, Scoped;
         public string[] Omit = Array.Empty<string>(), Extras = Array.Empty<string>(), Variants;
         public float Arms = 1, Legs = 1, Size = 1, HipsScale = 1;
+        // Round 12 (UnityrsRound12.cs): the Avatar's four twist settings (arm, forearm, upper leg, leg), null for
+        // DescribeHumanoid's; a twin's clips leave out the ten limb-twist curves.
+        public float[] Twist;
+        public bool NoLimbTwist;
+        public bool Round12 => Twist != null;
+        public BodyRig With(string name, float[] twist, bool noLimbTwist = false)
+        {
+            var copy = (BodyRig)MemberwiseClone();
+            copy.Name = name;
+            copy.Twist = twist;
+            copy.NoLimbTwist = noLimbTwist;
+            return copy;
+        }
     }
 
     // F1 rigs: the two P2b rigs, then F6's topologies on the compact rig.
@@ -337,6 +350,10 @@ static partial class UnityrsFixtureBuilder
         public BodyCase Body;
         public BodyProbe[] BodyProbes;
         public BodyClipVariant BodyClip;
+        // Round 12: motion checks are diagnostics written beside the capture (AnimReplayRecorder.Check), and a
+        // subset clip's exact compiled tracks (CheckTracks).
+        public bool Diagnose;
+        public (string track, int attribute)[] Tracks;
     }
 
     sealed partial class Build
@@ -728,16 +745,19 @@ static partial class UnityrsFixtureBuilder
         {
             var hips = BuildBodySkeleton(rigObject.transform, rig);
             var skeleton = rigObject.GetComponentsInChildren<Transform>();
-            avatar = AvatarBuilder.BuildHumanAvatar(rigObject, DescribeHumanoid(skeleton, rig.Tall));
+            avatar = AvatarBuilder.BuildHumanAvatar(rigObject, WithTwist(DescribeHumanoid(skeleton, rig.Tall), rig.Twist));
             Unavailable(avatar != null && avatar.isValid && avatar.isHuman,
                 "AvatarBuilder.BuildHumanAvatar did not accept the " + rig.Name + " rig as a valid Humanoid Avatar.");
+            CheckTwist(avatar, rig.Twist, bundle, report);
             avatar.name = bundle;
             avatar.hideFlags = HideFlags.None;
 
             string dir = Folder(Assets + "/" + bundle);
             var animator = SaveCoverageRig(rigObject, hips, skeleton, avatar, dir, out var assets);
-            var muscles = AuthorHumanoidClip(dir, bundle + "-muscles", bodyMotion: false);
-            SetNeutralSettings(muscles, 0);
+            // A round 12 clip-subset case plays its own clip (UnityrsRound12.cs AuthorSubsetClip).
+            var muscles = sweep == "subset" ? AuthorSubsetClip(dir, bundle + "-muscles", Round12Case(extra.name))
+                : AuthorHumanoidClip(dir, bundle + "-muscles", bodyMotion: false);
+            if (sweep != "subset") SetNeutralSettings(muscles, 0);
             var clips = new List<AnimationClip> { muscles };
             // The chain clip counts only with its motion curves; without them its
             // case is not covered and the chain's targets still record.
@@ -791,12 +811,22 @@ static partial class UnityrsFixtureBuilder
             }
             if (extra.name != null)
             {
-                // A null plan is a twist, range, band or muscle sweep.
-                var extraReplay = Replay(extra.name, prefab, clipPaths[0], "probes", "identity");
+                // A null plan is a twist, range, band or muscle sweep, or a round 12 table or subset case.
+                var extraReplay = Replay(extra.name, prefab, clipPaths[0], sweep == "subset" ? "clip" : "probes", "identity");
                 extraReplay.Body.Variant = extra.plan == null ? sweep : "extra";
+                extraReplay.Diagnose = rig.Round12;
+                if (sweep == "subset")
+                {
+                    string authored = Round12Authored(muscles, new[] { extra.name });
+                    Require(authored == null, authored);
+                    extraReplay.Tracks = SubsetTracks(Round12Case(extra.name));
+                    build.Replays.Add(extraReplay);
+                    return;
+                }
                 AddProbeReplay(build, extraReplay, extra.plan != null ? ExtraSchedule(mapped, extra.plan)
                     : sweep == "range" ? RangeSchedule(mapped) : sweep == "band" ? RangeSchedule(mapped, band: true)
-                    : sweep == "muscle" ? MuscleSchedule(extra.name, mapped) : TwistSchedule());
+                    : sweep == "muscle" ? MuscleSchedule(extra.name, mapped)
+                    : sweep == "table" ? Round12Schedule(Round12Case(extra.name), mapped) : TwistSchedule());
                 return;
             }
             AddProbeReplay(build, Replay("body-probes-" + rig.Name, prefab, clipPaths[0], "probes", "identity"),
