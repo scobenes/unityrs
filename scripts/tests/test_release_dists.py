@@ -1,6 +1,6 @@
 """scripts/release_dists.py: the release workflow's distribution set, on synthetic wheels and sdists.
 
-Standard library only.
+Needs `packaging`, as the script does (scripts/requirements-tests.txt).
 """
 
 import contextlib
@@ -27,11 +27,15 @@ PLATFORMS = {
 }
 
 
-def wheel(folder: Path, platform: str, version="1.0.0", meta=None, abi="cp310-abi3") -> Path:
+def wheel(folder: Path, platform: str, version="1.0.0", meta=None, abi="cp310-abi3", tags=None) -> Path:
+    """A wheel named for `platform`, whose WHEEL file lists `tags` (by default the one its name gives)."""
     path = folder / f"unityrs-{version}-{abi}-{platform}.whl"
     path.parent.mkdir(parents=True, exist_ok=True)
+    tags = [f"{abi}-{platform}"] if tags is None else tags
+    record = "Wheel-Version: 1.0\nGenerator: synthetic\nRoot-Is-Purelib: false\n" + "".join(f"Tag: {t}\n" for t in tags)
     with zipfile.ZipFile(path, "w") as z:
         z.writestr(f"unityrs-{version}.dist-info/METADATA", f"Metadata-Version: 2.4\nName: unityrs\nVersion: {meta or version}\n")
+        z.writestr(f"unityrs-{version}.dist-info/WHEEL", record)
     return path
 
 
@@ -80,7 +84,21 @@ class ReleaseDistsTest(unittest.TestCase):
                                                 "its metadata gives version 0.0.1"),
                 "another ABI": (lambda r: (r[2].unlink(), wheel(r[2].parent, PLATFORMS["macos-arm64"], abi="cp311-cp311")),
                                 "not cp310-abi3"),
-                "an unknown platform": (lambda r: wheel(tmp / "a" / "extra", "win_amd64"), "names no single target"),
+                "an unknown platform": (lambda r: wheel(tmp / "a" / "extra", "win_amd64"), "are not exactly one target's"),
+                "a compressed tag set": (
+                    lambda r: (r[2].unlink(), wheel(r[2].parent, "macosx_11_0_arm64.win_amd64")),
+                    "macosx_11_0_arm64.win_amd64 are not exactly one target's",
+                ),
+                "WHEEL tags other than the name's": (
+                    lambda r: (r[0].unlink(), wheel(r[0].parent, PLATFORMS["linux-x86_64"],
+                                                    tags=["cp310-abi3-manylinux_2_28_aarch64"])),
+                    "its WHEEL file lists tags ['cp310-abi3-manylinux_2_28_aarch64']",
+                ),
+                "an extra WHEEL tag": (
+                    lambda r: (r[0].unlink(), wheel(r[0].parent, PLATFORMS["linux-x86_64"],
+                                                    tags=["cp310-abi3-manylinux_2_28_x86_64", "cp310-abi3-win_amd64"])),
+                    "its WHEEL file lists tags",
+                ),
                 "a stray file": (lambda r: (tmp / "a" / "sdist" / "notes.txt").write_text("x"), "neither a unityrs"),
             }
             for label, (change, message) in cases.items():
@@ -91,6 +109,15 @@ class ReleaseDistsTest(unittest.TestCase):
                     files = sorted(p for p in (tmp / "a").rglob("*") if p.is_file())
                     found = R.problems(files, "1.0.0")
                     self.assertTrue(any(message in p for p in found), (message, found))
+
+    def test_versions_compare_after_pep_440_normalisation(self):
+        with scratch.folder("unityrs-release-") as tmp:
+            files = [wheel(tmp / f"wheel-{name}", tag, "1.0.1rc1") for name, tag in PLATFORMS.items()]
+            files.append(sdist(tmp / "sdist", "1.0.1rc1"))
+            self.assertEqual(R.problems(files, "v1.0.1-rc.1"), [])
+            self.assertEqual(R.problems(files, "1.0.1-rc.1"), [])
+            self.assertTrue(any("not 1.0.1" in p for p in R.problems(files, "1.0.1")))
+            self.assertTrue(any("not not-a-version" in p for p in R.problems(files, "not-a-version")))
 
 
 if __name__ == "__main__":

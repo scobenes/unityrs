@@ -5,13 +5,17 @@
 ARTIFACTS holds one folder per artifact (actions/download-artifact without
 `merge-multiple`). The files in them must be exactly one sdist and one wheel
 per platform target of `.github/workflows/release.yml`'s matrix (TARGETS
-below, by platform tag), with no file name twice, every one of them at
-`--version` by its name and by its own metadata (a wheel's METADATA, the
-sdist's PKG-INFO). Then each is copied into DIST, which must not exist yet,
-for `twine check` and the upload.
+below). A wheel's name carries exactly its target's one platform tag (no
+compressed tag set), and the tags its own WHEEL file lists are exactly the
+one its name gives. No file name is there twice, and every file is at
+`--version` (a tag's text such as `v1.0.1-rc.1` or `1.0.0`), compared after
+PEP 440 normalisation, by its name and by its own metadata (a wheel's
+METADATA, the sdist's PKG-INFO). Then each is copied into DIST, which must
+not exist yet, for `twine check` and the upload.
 
 Exit status: 0 when the set is right, 1 when it is not (each problem on its
-own line on stderr), 2 for a usage error. Standard library only.
+own line on stderr), 2 for a usage error. Needs `packaging` (which twine
+brings) for the version rule.
 """
 
 from __future__ import annotations
@@ -25,11 +29,13 @@ import zipfile
 from email.parser import HeaderParser
 from pathlib import Path
 
+from packaging.version import InvalidVersion, Version
+
 NAME = "unityrs"
 # The abi3 wheel's Python and ABI tags (pyo3's abi3-py310).
 ABI = "cp310-abi3"
-# One wheel per row of the workflow's wheel matrix: its label, and the
-# platform tag (one of a wheel's dot-separated set) that names it.
+# One wheel per row of the workflow's wheel matrix: its label, and the one
+# platform tag a wheel's name carries for it.
 TARGETS = {
     "linux x86_64": re.compile(r"manylinux_2_28_x86_64"),
     "linux aarch64": re.compile(r"manylinux_2_28_aarch64"),
@@ -40,19 +46,30 @@ WHEEL = re.compile(rf"{NAME}-(?P<version>[^-]+)-(?P<abi>[^-]+-[^-]+)-(?P<platfor
 SDIST = re.compile(rf"{NAME}-(?P<version>[^-]+)\.tar\.gz")
 
 
-def _metadata_version(path: Path, version: str) -> str | None:
-    """The `Version` a distribution's own metadata gives, or None when it has none to read."""
+def _same(a: str | None, b: str) -> bool:
+    """Whether two version texts are one PEP 440 version (`1.0.1-rc.1` is `1.0.1rc1`)."""
+    try:
+        return a is not None and Version(a) == Version(b)
+    except InvalidVersion:
+        return False
+
+
+def _member(path: Path, name: str) -> str | None:
+    """The text of the file `name` in the wheel or sdist `path`, or None when it has none to read."""
     try:
         if path.suffix == ".whl":
             with zipfile.ZipFile(path) as wheel:
-                text = wheel.read(f"{NAME}-{version}.dist-info/METADATA").decode("utf-8")
-        else:
-            with tarfile.open(path) as sdist:
-                member = sdist.extractfile(f"{NAME}-{version}/PKG-INFO")
-                text = member.read().decode("utf-8") if member else ""
+                return wheel.read(name).decode("utf-8")
+        with tarfile.open(path) as sdist:
+            member = sdist.extractfile(name)
+            return member.read().decode("utf-8") if member else None
     except (KeyError, OSError, zipfile.BadZipFile, tarfile.TarError, UnicodeDecodeError):
         return None
-    return HeaderParser().parsestr(text).get("Version")
+
+
+def _headers(path: Path, name: str):
+    text = _member(path, name)
+    return None if text is None else HeaderParser().parsestr(text)
 
 
 def problems(files: list[Path], version: str) -> list[str]:
@@ -67,22 +84,29 @@ def problems(files: list[Path], version: str) -> list[str]:
         if wheel := WHEEL.fullmatch(path.name):
             if wheel["abi"] != ABI:
                 out.append(f"{path.name}: tagged {wheel['abi']}, not {ABI}")
-            labels = [lb for lb, tag in TARGETS.items() if any(tag.fullmatch(p) for p in wheel["platform"].split("."))]
-            if len(labels) != 1:
-                out.append(f"{path.name}: its platform tag {wheel['platform']} names no single target")
+            labels = [label for label, tag in TARGETS.items() if tag.fullmatch(wheel["platform"])]
+            if not labels:
+                out.append(f"{path.name}: its platform tags {wheel['platform']} are not exactly one target's")
             for label in labels:
                 found[label].append(path.name)
-            given = wheel["version"]
+            given, info = wheel["version"], f"{NAME}-{wheel['version']}.dist-info"
+            meta = _headers(path, f"{info}/METADATA")
+            record = _headers(path, f"{info}/WHEEL")
+            tags = sorted(record.get_all("Tag") or []) if record else []
+            name_tags = [f"{wheel['abi']}-{wheel['platform']}"]
+            if tags != name_tags:
+                out.append(f"{path.name}: its WHEEL file lists tags {tags}, not {name_tags}")
         elif sdist := SDIST.fullmatch(path.name):
             sdists.append(path.name)
             given = sdist["version"]
+            meta = _headers(path, f"{NAME}-{given}/PKG-INFO")
         else:
             out.append(f"{path.name}: neither a {NAME} wheel nor its sdist")
             continue
-        if given != version:
+        if not _same(given, version):
             out.append(f"{path.name}: version {given}, not {version}")
-        elif (meta := _metadata_version(path, version)) != version:
-            out.append(f"{path.name}: its metadata gives version {meta}, not {version}")
+        elif not _same(meta.get("Version") if meta else None, version):
+            out.append(f"{path.name}: its metadata gives version {meta and meta.get('Version')}, not {version}")
     for label, wheels in found.items():
         if len(wheels) != 1:
             out.append(f"{label}: {len(wheels)} wheels ({', '.join(wheels) or 'none'}), not one")
@@ -108,7 +132,7 @@ def main(argv=None) -> int:
     args.dist.mkdir(parents=True)
     for path in files:
         shutil.copy2(path, args.dist / path.name)
-    print(f"release-dists: {len(files)} distributions of {NAME} {args.version} in {args.dist}")
+    print(f"release-dists: {len(files)} distributions of {NAME} {Version(args.version)} in {args.dist}")
     return 0
 
 

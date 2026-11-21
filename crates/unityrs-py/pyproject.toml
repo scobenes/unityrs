@@ -12,9 +12,10 @@ description = "Read Unity asset files through the unityrs Rust core."
 # The PyPI page's text: the binding's guide, beside pyproject.toml.
 readme = "README.md"
 # The extension links the unityrs crates, so their ported code's licences
-# are terms here too (each crate's `license`); THIRD_PARTY_LICENSES holds
-# every notice, those of the Rust crates it builds on included.
-license = "(MIT OR Apache-2.0) AND MIT AND MIT-CMU AND BSD-2-Clause AND BSD-3-Clause AND BSD-2-Clause-Views AND PSF-2.0 AND Apache-2.0 AND ISC AND Zlib AND LicenseRef-Crunch"
+# are terms here too (each crate's `license`), as is 0BSD for the xz sources
+# liblzma-sys compiles in (about.toml); the other crates it links add no
+# licence beyond these. THIRD_PARTY_LICENSES holds every notice.
+license = "(MIT OR Apache-2.0) AND MIT AND MIT-CMU AND BSD-2-Clause AND BSD-3-Clause AND BSD-2-Clause-Views AND PSF-2.0 AND Apache-2.0 AND ISC AND Zlib AND 0BSD AND LicenseRef-Crunch"
 license-files = ["LICENSE-MIT", "LICENSE-APACHE", "LICENSE-UNITYPY", "LICENSE-UNITYPY-HEAD", "THIRD_PARTY_LICENSES"]
 authors = [{ name = "Scott Benes", email = "scobenes@gmail.com" }]
 keywords = ["unity", "unitypy", "assetbundle", "texture", "gamedev"]

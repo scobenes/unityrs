@@ -21,9 +21,10 @@
 //!
 //! The storage unityrs retains or stages while it reads and decodes an asset
 //! input is charged to that input's budget before it is allocated, and size,
-//! work and depth limits refuse hostile input with a typed error. Values
-//! once returned to the caller, and anything the caller builds, are outside
-//! that budget.
+//! work and depth limits refuse hostile input with a typed error. A value
+//! the reader returns, such as a parsed object's
+//! [`Parsed`], keeps its charge on that budget until it is
+//! dropped. What the caller builds itself is outside the budget.
 //!
 //! ```no_run
 //! use std::path::Path;
