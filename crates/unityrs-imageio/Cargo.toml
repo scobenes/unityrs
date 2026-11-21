@@ -18,6 +18,12 @@ rust-version.workspace = true
 license = "(MIT OR Apache-2.0) AND MIT-CMU AND Zlib AND BSD-3-Clause"
 repository.workspace = true
 authors.workspace = true
+readme.workspace = true
+keywords = ["png", "webp", "pillow", "image", "unity"]
+categories = ["multimedia::images", "multimedia::encoding"]
+# The package carries the code and its notices; tests, fixtures and
+# examples stay in the repository.
+include = ["/src/**", "/LICENSE-*", "/NOTICE-*", "/build.rs", "/build_webp.rs", "/build_webp_patch.rs", "/webp-alloc.h", "/webp-shim.c", "/webp-symbols.h", "/zlib-match/**", "/vendor/**"]
 
 [features]
 # Test/fuzz comparison only; normal builds do not compile the reference.

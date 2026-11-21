@@ -88,11 +88,19 @@ class Built:
                 ("m_LocalPosition", "translation", "xyz"), ("m_LocalRotation", "rotation", "xyzw"),
                 ("m_LocalScale", "scale", "xyz"))}
 
+    # The Avatar's (file index, path id), as BundleView.asset returns a key, never the value.
+    AVATAR = (0, -90)
+
     def value(self, key):
+        if key == self.AVATAR:
+            return self.avatar()
         return self.clip if key is None else self.transforms[key]
 
     def asset(self, path, class_id):
         assert (path, class_id) == (self.avatar_path, 90)
+        return self.AVATAR
+
+    def avatar(self):
         return {"m_Avatar": {"m_Human": {"data": {"m_Scale": self.human_scale, "m_Skeleton": {"data": dict(
             m_ID=self.ids, m_Node=[dict(m_ParentId=parent) for parent in self.parents])},
             "m_HumanBoneIndex": self.bone_index}}}, "m_TOS": self.tos}

@@ -7,16 +7,22 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+readme = "README.md"
+keywords = ["gltf", "glb", "unity", "3d", "export"]
+categories = ["rendering::data-formats", "game-development", "graphics"]
+# The package carries the code and its notices; tests, fixtures and
+# examples stay in the repository.
+include = ["/src/**", "/LICENSE-*", "/NOTICE-*"]
 
 [dependencies]
-unityrs-core = { path = "../unityrs-core" }
+unityrs-core = { version = "1.0.0", path = "../unityrs-core" }
 
-unityrs-mesh = { path = "../unityrs-mesh" }
-unityrs-meshdecode = { path = "../unityrs-meshdecode" }
-unityrs-scene = { path = "../unityrs-scene" }
+unityrs-mesh = { version = "1.0.0", path = "../unityrs-mesh" }
+unityrs-meshdecode = { version = "1.0.0", path = "../unityrs-meshdecode" }
+unityrs-scene = { version = "1.0.0", path = "../unityrs-scene" }
 
-unityrs-texture = { path = "../unityrs-texture" }
-unityrs-imageio = { path = "../unityrs-imageio" }
+unityrs-texture = { version = "1.0.0", path = "../unityrs-texture" }
+unityrs-imageio = { version = "1.0.0", path = "../unityrs-imageio" }
 
 [dev-dependencies]
 unityrs-testkit = { path = "../unityrs-testkit" }

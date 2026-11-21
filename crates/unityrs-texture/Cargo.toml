@@ -41,6 +41,12 @@ rust-version.workspace = true
 license = "(MIT OR Apache-2.0) AND MIT AND MIT-CMU AND BSD-3-Clause AND BSD-2-Clause-Views AND Apache-2.0 AND LicenseRef-Crunch AND Zlib"
 repository.workspace = true
 authors.workspace = true
+readme.workspace = true
+keywords = ["unity", "texture", "astc", "etc2", "bcn"]
+categories = ["multimedia::images", "game-development", "graphics"]
+# The package carries the code and its notices; tests, fixtures and
+# examples stay in the repository.
+include = ["/src/**", "/LICENSE-*", "/NOTICE-*", "/build.rs", "/encoder_allocator.hpp", "/encoder_bridge.cpp", "/vendor/**"]
 
 [features]
 # The decoders and raw writer never require a C++ toolchain.
@@ -52,12 +58,12 @@ cc = { version = "=1.10.0", optional = true }
 [dependencies]
 # The meter every output buffer is charged to before it is allocated
 # (docs/plans/extract.md E59).
-unityrs-core = { path = "../unityrs-core" }
+unityrs-core = { version = "1.0.0", path = "../unityrs-core" }
 # Shared Pillow fixed-point resampling; no additional third-party dependency.
-unityrs-imageio = { path = "../unityrs-imageio" }
+unityrs-imageio = { version = "1.0.0", path = "../unityrs-imageio" }
 # A tight sprite's mesh (MeshHandler.process, get_triangles), which the
 # sprite renderer reads (src/sprite.rs).
-unityrs-meshdecode = { path = "../unityrs-meshdecode" }
+unityrs-meshdecode = { version = "1.0.0", path = "../unityrs-meshdecode" }
 thiserror = "=2.0.21"
 
 [dev-dependencies]

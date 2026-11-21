@@ -8,9 +8,15 @@ rust-version.workspace = true
 license = "(MIT OR Apache-2.0) AND MIT AND ISC"
 repository.workspace = true
 authors.workspace = true
+readme.workspace = true
+keywords = ["unity", "fsb5", "audioclip", "wav", "audio"]
+categories = ["multimedia::audio", "game-development"]
+# The package carries the code and its notices; tests, fixtures and
+# examples stay in the repository.
+include = ["/src/**", "/LICENSE-*", "/NOTICE-*"]
 
 [dependencies]
-unityrs-core = { path = "../unityrs-core" }
+unityrs-core = { version = "1.0.0", path = "../unityrs-core" }
 thiserror = "=2.0.21"
 # Packet API avoids an intermediate Ogg allocation; decision 19 keeps audio
 # outside batch because lewton's internal allocations are infallible.

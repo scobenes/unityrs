@@ -2,6 +2,7 @@
 on synthetic rigs: a pair the rows cannot separate stays unwitnessed, and refuses exactly the cells whose keys
 separate it."""
 
+import os
 import unittest
 from unittest import mock
 
@@ -70,6 +71,9 @@ class RowTests(unittest.TestCase):
 
     def test_run_files_refuse_symlinks_and_escapes(self):
         with scratch.folder() as root:
+            # The scratch folder's own ancestors may be symlinks (macOS: /var is /private/var); the guard refuses
+            # any, so start from its real path.
+            root = type(root)(os.path.realpath(root))
             run, outside = root / "run", root / "outside"
             (run / "replays" / "body").mkdir(parents=True)
             outside.mkdir()

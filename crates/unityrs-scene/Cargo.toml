@@ -7,9 +7,15 @@ rust-version.workspace = true
 license = "(MIT OR Apache-2.0) AND MIT"
 repository.workspace = true
 authors.workspace = true
+readme.workspace = true
+keywords = ["unity", "gameobject", "transform", "scene", "gamedev"]
+categories = ["game-development", "graphics"]
+# The package carries the code and its notices; tests, fixtures and
+# examples stay in the repository.
+include = ["/src/**", "/LICENSE-*", "/NOTICE-*"]
 
 [dependencies]
-unityrs-core = { path = "../unityrs-core" }
+unityrs-core = { version = "1.0.0", path = "../unityrs-core" }
 
 [dev-dependencies]
 unityrs-testkit = { path = "../unityrs-testkit" }
