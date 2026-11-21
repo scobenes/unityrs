@@ -13,13 +13,19 @@ rust-version.workspace = true
 license = "(MIT OR Apache-2.0) AND MIT"
 repository.workspace = true
 authors.workspace = true
+readme.workspace = true
+keywords = ["unity", "unitypy", "mesh", "vertex", "gamedev"]
+categories = ["game-development", "graphics", "parser-implementations"]
+# The package carries the code and its notices; tests, fixtures and
+# examples stay in the repository.
+include = ["/src/**", "/LICENSE-*", "/NOTICE-*"]
 
 [dependencies]
 # The typetree values it reads (a Mesh's, a Sprite's render data), the
 # version they were read under, the resource read for `m_StreamData`, and
 # the meter every array is charged to before it is allocated
 # (docs/plans/extract.md E59).
-unityrs-core = { path = "../unityrs-core" }
+unityrs-core = { version = "1.0.0", path = "../unityrs-core" }
 thiserror = "=2.0.21"
 
 [dev-dependencies]

@@ -2506,7 +2506,7 @@ Used by:
 Apache License 2.0 (Apache-2.0)
 
 Used by:
-- unityrs-texture 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-texture 1.0.0 (https://github.com/scobenes/unityrs)
 
                               Apache License
                         Version 2.0, January 2004
@@ -2784,7 +2784,7 @@ limitations under the License.
 Apache License 2.0 (Apache-2.0)
 
 Used by:
-- unityrs-texture 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-texture 1.0.0 (https://github.com/scobenes/unityrs)
 
 Copyright 2011-2024 Arm Limited
 
@@ -2969,9 +2969,9 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 BSD 2-Clause "Simplified" License (BSD-2-Clause)
 
 Used by:
-- unityrs-compress-sys 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-compress-sys 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-core 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-compress-sys 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-compress-sys 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-core 1.0.0 (https://github.com/scobenes/unityrs)
 
 LZ4 Library
 Copyright (c) 2011-2020, Yann Collet
@@ -3003,7 +3003,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 BSD 2-Clause with views sentence (BSD-2-Clause-Views)
 
 Used by:
-- unityrs-texture 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-texture 1.0.0 (https://github.com/scobenes/unityrs)
 
 Copyright 2009, 2010 The University of Texas at Austin.
 All rights reserved.
@@ -3046,8 +3046,8 @@ or implied, of The University of Texas at Austin.
 BSD 3-Clause "New" or "Revised" License (BSD-3-Clause)
 
 Used by:
-- unityrs-imageio 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-imageio 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-imageio 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-imageio 1.0.0 (https://github.com/scobenes/unityrs)
 
 Copyright (c) 2010, Google Inc. All rights reserved.
 
@@ -3085,7 +3085,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 BSD 3-Clause "New" or "Revised" License (BSD-3-Clause)
 
 Used by:
-- unityrs-texture 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-texture 1.0.0 (https://github.com/scobenes/unityrs)
 
 Copyright (c) 2011-2014, The OpenBLAS Project
 All rights reserved.
@@ -3122,7 +3122,7 @@ USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 BSD 3-Clause "New" or "Revised" License (BSD-3-Clause)
 
 Used by:
-- unityrs-texture 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-texture 1.0.0 (https://github.com/scobenes/unityrs)
 
 Copyright (c) 2013 - 2015, The OpenBLAS Project
 All rights reserved.
@@ -3154,7 +3154,7 @@ USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 BSD 3-Clause "New" or "Revised" License (BSD-3-Clause)
 
 Used by:
-- unityrs-texture 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-texture 1.0.0 (https://github.com/scobenes/unityrs)
 
 Copyright (c) 2014, The OpenBLAS Project
 All rights reserved.
@@ -3244,7 +3244,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 BSD 3-Clause "New" or "Revised" License (BSD-3-Clause)
 
 Used by:
-- unityrs-texture 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-texture 1.0.0 (https://github.com/scobenes/unityrs)
 
 etcpak, an extremely fast ETC compression utility (https://github.com/wolfpld/etcpak)
 
@@ -3368,7 +3368,7 @@ Used by:
 ISC License (ISC)
 
 Used by:
-- unityrs-audio 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-audio 1.0.0 (https://github.com/scobenes/unityrs)
 
 Copyright (c) 2008-2025 Adam Gashlin, Fastelbja, Ronny Elfert, bnnm,
                         Christopher Snowhill, NicknineTheEagle, bxaimc,
@@ -5803,7 +5803,7 @@ DEALINGS IN THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-- unityrs-texture 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-texture 1.0.0 (https://github.com/scobenes/unityrs)
 
 Little CMS 2.15
 Copyright (c) 1998-2023 Marti Maria Saguer
@@ -5831,9 +5831,9 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
 MIT License (MIT)
 
 Used by:
-- unityrs-core 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-export 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-texture 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-core 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-export 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-texture 1.0.0 (https://github.com/scobenes/unityrs)
 
 MIT License
 
@@ -5863,7 +5863,7 @@ SOFTWARE.
 MIT License (MIT)
 
 Used by:
-- unityrs-core 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-core 1.0.0 (https://github.com/scobenes/unityrs)
 
 MIT License
 
@@ -5988,18 +5988,18 @@ SOFTWARE.
 MIT License (MIT)
 
 Used by:
-- unityrs-audio 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-bench-lzma 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-core 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-dump 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-export 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-mesh 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-meshdecode 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-py 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-scene 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-testkit 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-texture 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-tpk 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-audio 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-bench-lzma 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-core 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-dump 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-export 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-mesh 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-meshdecode 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-py 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-scene 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-testkit 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-texture 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-tpk 1.0.0 (https://github.com/scobenes/unityrs)
 
 MIT License
 
@@ -6028,8 +6028,8 @@ SOFTWARE.
 MIT License (MIT)
 
 Used by:
-- unityrs-core 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-py 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-core 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-py 1.0.0 (https://github.com/scobenes/unityrs)
 
 MIT License
 
@@ -6058,7 +6058,7 @@ SOFTWARE.
 MIT License (MIT)
 
 Used by:
-- unityrs-texture 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-texture 1.0.0 (https://github.com/scobenes/unityrs)
 
 MIT License
 
@@ -6087,7 +6087,7 @@ SOFTWARE.
 MIT License (MIT)
 
 Used by:
-- unityrs-audio 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-audio 1.0.0 (https://github.com/scobenes/unityrs)
 
 MIT License
 
@@ -6145,7 +6145,7 @@ SOFTWARE.
 MIT License (MIT)
 
 Used by:
-- unityrs-audio 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-audio 1.0.0 (https://github.com/scobenes/unityrs)
 
 MIT License
 
@@ -6174,26 +6174,26 @@ SOFTWARE.
 MIT License (MIT)
 
 Used by:
-- unityrs-anim 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-audio 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-batch 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-bench 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-bench-lzma 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-cli 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-compress-sys 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-core 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-dump 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-export 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-gltf 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-imageio 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-mesh 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-meshdecode 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-py 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-pysum 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-scene 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-testkit 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-texture 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-tpk 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-anim 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-audio 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-batch 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-bench 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-bench-lzma 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-cli 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-compress-sys 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-core 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-dump 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-export 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-gltf 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-imageio 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-mesh 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-meshdecode 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-py 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-pysum 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-scene 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-testkit 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-texture 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-tpk 1.0.0 (https://github.com/scobenes/unityrs)
 
 MIT License
 
@@ -6251,7 +6251,7 @@ SOFTWARE.
 MIT License (MIT)
 
 Used by:
-- unityrs-texture 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-texture 1.0.0 (https://github.com/scobenes/unityrs)
 
 MIT License
 Copyright(c) 2020-2021 Richard Geldreich, Jr.
@@ -6573,7 +6573,7 @@ THE SOFTWARE.
 MIT License (MIT)
 
 Used by:
-- unityrs-audio 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-audio 1.0.0 (https://github.com/scobenes/unityrs)
 
 The MIT License (MIT)
 
@@ -6602,7 +6602,7 @@ SOFTWARE.
 MIT License (MIT)
 
 Used by:
-- unityrs-texture 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-texture 1.0.0 (https://github.com/scobenes/unityrs)
 
 The MIT License (MIT)
 
@@ -6811,8 +6811,8 @@ THE SOFTWARE.
 CMU License (MIT-CMU)
 
 Used by:
-- unityrs-imageio 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-texture 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-imageio 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-texture 1.0.0 (https://github.com/scobenes/unityrs)
 
 The Python Imaging Library (PIL) is
 
@@ -6850,7 +6850,7 @@ PERFORMANCE OF THIS SOFTWARE.
 Python Software Foundation License 2.0 (PSF-2.0)
 
 Used by:
-- unityrs-pysum 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-pysum 1.0.0 (https://github.com/scobenes/unityrs)
 
 PYTHON SOFTWARE FOUNDATION LICENSE VERSION 2
 --------------------------------------------
@@ -6904,9 +6904,9 @@ Agreement.
 Python Software Foundation License 2.0 (PSF-2.0)
 
 Used by:
-- unityrs-cli 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-core 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-dump 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-cli 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-core 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-dump 1.0.0 (https://github.com/scobenes/unityrs)
 
 PYTHON SOFTWARE FOUNDATION LICENSE VERSION 2
 --------------------------------------------
@@ -7108,7 +7108,7 @@ freely, subject to the following restrictions:
 zlib License (Zlib)
 
 Used by:
-- unityrs-texture 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-texture 1.0.0 (https://github.com/scobenes/unityrs)
 
 Copyright (c) 2010-2016 Richard Geldreich, Jr. and Binomial LLC
 
@@ -7135,8 +7135,8 @@ misrepresented as being the original software.
 zlib License (Zlib)
 
 Used by:
-- unityrs-imageio 0.0.1 (https://github.com/scobenes/unityrs)
-- unityrs-imageio 0.0.1 (https://github.com/scobenes/unityrs)
+- unityrs-imageio 1.0.0 (https://github.com/scobenes/unityrs)
+- unityrs-imageio 1.0.0 (https://github.com/scobenes/unityrs)
 
 Copyright notice:
 

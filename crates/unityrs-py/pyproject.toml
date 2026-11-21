@@ -4,13 +4,42 @@ build-backend = "maturin"
 
 [project]
 name = "unityrs"
-version = "0.0.1"
+version = "1.0.0"
 requires-python = ">=3.10"
 # UnityPy record semantics (slots, inheritance, equality, hashing); MIT.
 dependencies = ["attrs>=23.2.0"]
 description = "Read Unity asset files through the unityrs Rust core."
+# The PyPI page's text: the binding's guide, beside pyproject.toml.
+readme = "README.md"
 license = "(MIT OR Apache-2.0) AND MIT"
 license-files = ["LICENSE-MIT", "LICENSE-APACHE", "LICENSE-UNITYPY", "LICENSE-UNITYPY-HEAD", "THIRD_PARTY_LICENSES"]
+authors = [{ name = "Scott Benes", email = "scobenes@gmail.com" }]
+keywords = ["unity", "unitypy", "assetbundle", "texture", "gamedev"]
+# No License classifier: PEP 639's `license` expression replaces them.
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Rust",
+    "Topic :: Games/Entertainment",
+    "Topic :: Multimedia :: Graphics",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[project.urls]
+Homepage = "https://github.com/scobenes/unityrs"
+Repository = "https://github.com/scobenes/unityrs"
+Issues = "https://github.com/scobenes/unityrs/issues"
+Changelog = "https://github.com/scobenes/unityrs/blob/main/CHANGELOG.md"
 
 [project.scripts]
 unityrs = "unityrs.cli:main"

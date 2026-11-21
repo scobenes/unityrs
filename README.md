@@ -4,7 +4,7 @@ Fast Unity asset extraction in Rust: asset bundles, serialized files,
 typetrees, textures, sprites, meshes, animation and glTF export, as a library,
 a command-line tool and Python bindings.
 
-**Status: pre-alpha.** The core reads asset bundles, serialized files and
+**Status: 1.0.0** ([changelog](CHANGELOG.md)). The core reads asset bundles, serialized files and
 typetrees as UnityPy 1.25.2 reads them. The CLI provides the canonical dump,
 value-case protocol, batch extraction, OBJ/MTL and static scene/prefab GLB export.
 The CLI also exports generic and legacy animation to GLB and runs
@@ -13,6 +13,63 @@ Positive humanoid playback is [deferred](docs/plans/anim.md#26-later-slices).
 The plan and phases are in [`docs/DESIGN.md`](docs/DESIGN.md).
 
 Agents and scripts: see [the agent interface guide](docs/AGENTS.md) for `describe`, `inspect`, `show`, and the JSON protocols.
+
+## Install
+
+### Rust
+
+The library is a set of crates; `unityrs-core` reads bundles, serialized
+files and typetrees, and the others build on it (`unityrs-texture`,
+`unityrs-export`, `unityrs-gltf`, `unityrs-batch` and more). The toolchain is
+Rust 1.99 or later.
+
+```sh
+cargo add unityrs-core
+```
+
+```rust
+use std::path::Path;
+use unityrs_core::env::{EnvOptions, Environment};
+
+fn main() -> Result<(), unityrs_core::Error> {
+    let env = Environment::new(EnvOptions::unitypy());
+    env.load_path(Path::new("level0.bundle"))?;
+    for object in env.objects() {
+        let object = object?;
+        println!("path id {} class id {}", object.path_id(), object.class_id());
+    }
+    Ok(())
+}
+```
+
+The command-line tool is the `unityrs` binary of the `unityrs-cli` crate:
+
+```sh
+cargo install unityrs-cli
+unityrs extract level0.bundle -o out
+```
+
+### Python
+
+The `unityrs` package follows UnityPy's API. Wheels are abi3, for CPython
+3.10 and later on Linux and macOS.
+
+```sh
+pip install unityrs
+```
+
+```python
+import unityrs
+
+env = unityrs.load("level0.bundle")
+for obj in env.objects:
+    if obj.type.name == "Texture2D":
+        tree = obj.read_typetree()
+        print(obj.path_id, tree["m_Name"])
+```
+
+See [the binding's guide](crates/unityrs-py/README.md) for budgets, limits
+and the threat model.
 
 ## Goals
 
