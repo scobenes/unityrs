@@ -126,11 +126,8 @@ def load_rig(folder, rig, unityrs, views, run):
     every chain bone's recorded rest the Avatar's own (m_SkeletonPose, by m_TOS path), and the bundle the
     capture's pinned sha256."""
     import anim_fixture_round11 as r11
-    from anim_body_runs import human_of
     from anim_fixture_contract import check_identity
-    from anim_humanoid_qualify import node_paths, tos_paths
     from anim_muscle_confirm import placement
-    from anim_muscle_pose import avatar_node
     from anim_replay_complete import BundleView, bundle_digest, check_recording_run, read_manifest
 
     import anim_fixture_round12 as round12
@@ -154,6 +151,17 @@ def load_rig(folder, rig, unityrs, views, run):
                                              read_manifest(allow.private(), replay)[1])
     view = views[(bundle, digest)]
     avatar = view.value(view.asset(spec["avatar_asset"], 90))
+    return rig_of(case, spec, capture, avatar, rig)
+
+
+def rig_of(case, spec, capture, avatar, rig):
+    """A rig as `load_rig` gives it, from a checked capture (its `spec` and `capture`) and its bundle's decoded
+    Avatar: every chain bone mapped by both or neither, its axes record, its recorded transform the Avatar's by m_TOS
+    path, its recorded rest a unit quaternion and the Avatar's m_SkeletonPose; each pair's skeleton parent link."""
+    from anim_body_runs import human_of
+    from anim_humanoid_qualify import node_paths, tos_paths
+    from anim_muscle_pose import avatar_node
+
     human = human_of(avatar)
     skeleton = human["m_Skeleton"].get("data", human["m_Skeleton"])
     poses = human["m_SkeletonPose"].get("data", human["m_SkeletonPose"])["m_X"]
@@ -374,18 +382,24 @@ def _row(found):
     return dict(case=case, sample=sample, side=side, group=group, margin_degrees=math.degrees(best))
 
 
-def run(folder, unityrs, log=print):
+def scoped_rigs(folder, unityrs, log=print):
+    """(the run's identity, {rig: `load_rig`}) for every scoped rig of one round 11 run, through round 12's
+    allowlist alone, run.json too: its hashed bytes, from the view's private copy."""
     from anim_replay_complete import read_manifest
 
     import anim_fixture_round12 as round12
 
-    # run.json too through round 12's allowlist: its hashed bytes, from the view's private copy.
     views = {"allowlist": round12.round11_view(folder)}
     _, identity = read_manifest(views["allowlist"].private(), replay)
     rigs = {}
     for rig in SCOPED_RIGS:
         rigs[rig] = load_rig(folder, rig, unityrs, views, identity)
         log(f"read {rig}")
+    return identity, rigs
+
+
+def run(folder, unityrs, log=print):
+    identity, rigs = scoped_rigs(folder, unityrs, log)
     limb_found, foot_found, joint_found, joint_open, credits = search(rigs, log)
     groups = {}
     for found in (limb_found, foot_found, joint_found):
