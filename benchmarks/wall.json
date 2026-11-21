@@ -1,0 +1,4917 @@
+{
+ "schema_version": 1,
+ "run_id": 44864172167,
+ "run_attempt": 1,
+ "commit": "b4b4443667bddd38130ffe89fbd7b75c9691d7b1",
+ "date": "2026-11-21",
+ "scale": "full",
+ "rounds": 7,
+ "warmup": 1,
+ "tools": {
+  "unityrs": "0.0.1",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.1\nLLVM version: 23.1.1",
+  "unitypy": "1.25.2",
+  "unitypyboost_sha256": "40ee4f60b3d700f38e34f0ad205ef6a62beea311f44e61f4fcbc2feece96e124",
+  "pillow": "9.5.0",
+  "python": "3.11.18"
+ },
+ "machine": {
+  "cpu": "Intel(R) Xeon(R) 6975P-C",
+  "cores": 4,
+  "memory_bytes": 16464302080,
+  "kernel": "7.0.0-1014-aws",
+  "runner_image": "20261116.133.1",
+  "emulated": false
+ },
+ "fixtures_sha256": "2d1ee783e59fe858ba32d24bac5ec9ea97757694948ae7936d50eadf943da105",
+ "workloads": [
+  {
+   "name": "load-objects-lz4",
+   "impl": "unitypy",
+   "category": "load",
+   "timer": "load from bytes; list every file's object table",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "6",
+    "item": "LZ4 (2), LZ4HC (3)"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.06964945800001487,
+     "counts": {
+      "source_bytes": 5087065,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 0.8770701880000047,
+     "cpu_s": 0.8703800000000044,
+     "peak_pss_bytes": 139594752
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.07062748999999258,
+     "counts": {
+      "source_bytes": 5087065,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 0.8864544260000002,
+     "cpu_s": 0.8789530000000099,
+     "peak_pss_bytes": 139586560
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.07022862499997018,
+     "counts": {
+      "source_bytes": 5087065,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 0.8849343210000029,
+     "cpu_s": 0.8792139999999904,
+     "peak_pss_bytes": 139419648
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.07021444699995527,
+     "counts": {
+      "source_bytes": 5087065,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 0.8810751369999821,
+     "cpu_s": 0.8734929999999963,
+     "peak_pss_bytes": 139359232
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.07018769000001157,
+     "counts": {
+      "source_bytes": 5087065,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 0.8916744039999571,
+     "cpu_s": 0.8854799999999727,
+     "peak_pss_bytes": 139076608
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.07112916699998095,
+     "counts": {
+      "source_bytes": 5087065,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 0.8955357530001038,
+     "cpu_s": 0.8879410000000121,
+     "peak_pss_bytes": 139023360
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.07012581999993017,
+     "counts": {
+      "source_bytes": 5087065,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 0.8950446139999713,
+     "cpu_s": 0.8894860000000335,
+     "peak_pss_bytes": 138800128
+    }
+   ]
+  },
+  {
+   "name": "load-objects-lz4",
+   "impl": "unityrs",
+   "category": "load",
+   "timer": "load from bytes; list every file's object table",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "6",
+    "item": "LZ4 (2), LZ4HC (3)"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.06865654300000301,
+     "counts": {
+      "source_bytes": 5087065,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 0.28307905500000174,
+     "cpu_s": 0.27628899999999845,
+     "peak_pss_bytes": 68589568
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.0735858439999788,
+     "counts": {
+      "source_bytes": 5087065,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 0.2939650970000116,
+     "cpu_s": 0.28561100000000295,
+     "peak_pss_bytes": 68618240
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.06837081599996964,
+     "counts": {
+      "source_bytes": 5087065,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 0.28212812800001075,
+     "cpu_s": 0.2756180000000086,
+     "peak_pss_bytes": 69285888
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.07269997800000283,
+     "counts": {
+      "source_bytes": 5087065,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 0.2853507670000113,
+     "cpu_s": 0.27779700000002094,
+     "peak_pss_bytes": 68888576
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.07819242100003976,
+     "counts": {
+      "source_bytes": 5087065,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 0.30661511699997845,
+     "cpu_s": 0.287934000000007,
+     "peak_pss_bytes": 71852032
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.07182823899995583,
+     "counts": {
+      "source_bytes": 5087065,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 0.2941117989998929,
+     "cpu_s": 0.2849860000000035,
+     "peak_pss_bytes": 68370432
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.07281188799993288,
+     "counts": {
+      "source_bytes": 5087065,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 0.29562117199998283,
+     "cpu_s": 0.28522200000003295,
+     "peak_pss_bytes": 70821888
+    }
+   ]
+  },
+  {
+   "name": "load-objects-lzma",
+   "impl": "unitypy",
+   "category": "load",
+   "timer": "load from bytes; list every file's object table",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "6",
+    "item": "LZMA (1)"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.2578490049999971,
+     "counts": {
+      "source_bytes": 3826117,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 1.253886270999999,
+     "cpu_s": 1.2498500000000021,
+     "peak_pss_bytes": 145895424
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.25886990300000434,
+     "counts": {
+      "source_bytes": 3826117,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 1.2707465320000324,
+     "cpu_s": 1.2659259999999932,
+     "peak_pss_bytes": 146134016
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.26030329799999663,
+     "counts": {
+      "source_bytes": 3826117,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 1.267180983000003,
+     "cpu_s": 1.261606999999998,
+     "peak_pss_bytes": 145552384
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.2587455089999935,
+     "counts": {
+      "source_bytes": 3826117,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 1.2525186359999907,
+     "cpu_s": 1.2486639999999625,
+     "peak_pss_bytes": 145577984
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.2594382480000377,
+     "counts": {
+      "source_bytes": 3826117,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 1.273575438000023,
+     "cpu_s": 1.269318999999939,
+     "peak_pss_bytes": 145439744
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.25930581099999017,
+     "counts": {
+      "source_bytes": 3826117,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 1.2659031379999988,
+     "cpu_s": 1.2617699999999559,
+     "peak_pss_bytes": 145750016
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.259394068000006,
+     "counts": {
+      "source_bytes": 3826117,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 1.2696811299999808,
+     "cpu_s": 1.2649950000000558,
+     "peak_pss_bytes": 145110016
+    }
+   ]
+  },
+  {
+   "name": "load-objects-lzma",
+   "impl": "unityrs",
+   "category": "load",
+   "timer": "load from bytes; list every file's object table",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "6",
+    "item": "LZMA (1)"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.18680100500000663,
+     "counts": {
+      "source_bytes": 3826117,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 0.5208937959999957,
+     "cpu_s": 0.5159499999999966,
+     "peak_pss_bytes": 70822912
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.18696070199996484,
+     "counts": {
+      "source_bytes": 3826117,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 0.519481624999969,
+     "cpu_s": 0.5145590000000055,
+     "peak_pss_bytes": 70808576
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.18827939499999502,
+     "counts": {
+      "source_bytes": 3826117,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 0.5231064609999976,
+     "cpu_s": 0.5184429999999907,
+     "peak_pss_bytes": 70840320
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.1880848480000168,
+     "counts": {
+      "source_bytes": 3826117,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 0.5193139500000257,
+     "cpu_s": 0.5150450000000433,
+     "peak_pss_bytes": 70836224
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.1880333440000186,
+     "counts": {
+      "source_bytes": 3826117,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 0.5243379249999975,
+     "cpu_s": 0.518555000000049,
+     "peak_pss_bytes": 70769664
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.18749777400000767,
+     "counts": {
+      "source_bytes": 3826117,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 0.5219045069999311,
+     "cpu_s": 0.5170610000000124,
+     "peak_pss_bytes": 70815744
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.19029588499995498,
+     "counts": {
+      "source_bytes": 3826117,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 0.5258472250000068,
+     "cpu_s": 0.5210719999999469,
+     "peak_pss_bytes": 69935104
+    }
+   ]
+  },
+  {
+   "name": "load-objects-2019",
+   "impl": "unitypy",
+   "category": "load",
+   "timer": "load from bytes; list every file's object table",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "7.2",
+    "item": "`SerializedFile`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.043458985000000894,
+     "counts": {
+      "source_bytes": 23121792,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 0.8166247020000128,
+     "cpu_s": 0.8126450000000034,
+     "peak_pss_bytes": 111906816
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.043296075000000656,
+     "counts": {
+      "source_bytes": 23121792,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 0.8111277509999582,
+     "cpu_s": 0.8061250000000086,
+     "peak_pss_bytes": 111926272
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.0442933260000018,
+     "counts": {
+      "source_bytes": 23121792,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 0.8342562899999848,
+     "cpu_s": 0.828710000000001,
+     "peak_pss_bytes": 111901696
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.0439388589999794,
+     "counts": {
+      "source_bytes": 23121792,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 0.8176569029999996,
+     "cpu_s": 0.8138179999999693,
+     "peak_pss_bytes": 111877120
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.04376448400000754,
+     "counts": {
+      "source_bytes": 23121792,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 0.8560946350000336,
+     "cpu_s": 0.8515790000000152,
+     "peak_pss_bytes": 113190912
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.043719569000018055,
+     "counts": {
+      "source_bytes": 23121792,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 0.8393102030000819,
+     "cpu_s": 0.8350260000000276,
+     "peak_pss_bytes": 111911936
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.044495984000036515,
+     "counts": {
+      "source_bytes": 23121792,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 0.8507673990000058,
+     "cpu_s": 0.8459179999999833,
+     "peak_pss_bytes": 113154048
+    }
+   ]
+  },
+  {
+   "name": "load-objects-2019",
+   "impl": "unityrs",
+   "category": "load",
+   "timer": "load from bytes; list every file's object table",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "7.2",
+    "item": "`SerializedFile`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.03506592399997999,
+     "counts": {
+      "source_bytes": 23121792,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 0.22204321799998183,
+     "cpu_s": 0.21770099999999104,
+     "peak_pss_bytes": 60161024
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.03482301299999335,
+     "counts": {
+      "source_bytes": 23121792,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 0.2190583340000103,
+     "cpu_s": 0.21301899999998852,
+     "peak_pss_bytes": 60116992
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.03514491800001451,
+     "counts": {
+      "source_bytes": 23121792,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 0.2275987499999701,
+     "cpu_s": 0.22325399999999718,
+     "peak_pss_bytes": 60083200
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.036143653000010545,
+     "counts": {
+      "source_bytes": 23121792,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 0.22700341699999171,
+     "cpu_s": 0.22246599999999717,
+     "peak_pss_bytes": 60138496
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.03540933699997595,
+     "counts": {
+      "source_bytes": 23121792,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 0.23265347899996414,
+     "cpu_s": 0.22772300000002588,
+     "peak_pss_bytes": 59952128
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.035639234999962355,
+     "counts": {
+      "source_bytes": 23121792,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 0.22870149999994283,
+     "cpu_s": 0.22439199999996617,
+     "peak_pss_bytes": 59954176
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.03678538600001957,
+     "counts": {
+      "source_bytes": 23121792,
+      "objects": 20000
+     },
+     "digest": "0784c2683b90ebb4e2d126d6fc6b22ceb66a47aad486df174d2d7e83659a930a",
+     "process_s": 0.22940462700000808,
+     "cpu_s": 0.22473200000001725,
+     "peak_pss_bytes": 60089344
+    }
+   ]
+  },
+  {
+   "name": "load-many-blocks",
+   "impl": "unitypy",
+   "category": "load",
+   "timer": "load from bytes; read every entry's bytes",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "6",
+    "item": "LZ4 (2), LZ4HC (3)"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.11801004299999818,
+     "counts": {
+      "source_bytes": 39057847,
+      "entries": 1,
+      "entry_bytes": 67108864
+     },
+     "digest": "024bb83d2379b3e9ee48e1aa6aa964ee080fd7cdb24e3dfa0b2616af4bfd0dce",
+     "process_s": 1.013588249999998,
+     "cpu_s": 1.0076349999999934,
+     "peak_pss_bytes": 341664768
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.12449346099998593,
+     "counts": {
+      "source_bytes": 39057847,
+      "entries": 1,
+      "entry_bytes": 67108864
+     },
+     "digest": "024bb83d2379b3e9ee48e1aa6aa964ee080fd7cdb24e3dfa0b2616af4bfd0dce",
+     "process_s": 1.0263094960000103,
+     "cpu_s": 1.019670000000005,
+     "peak_pss_bytes": 323741696
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.12398005900001863,
+     "counts": {
+      "source_bytes": 39057847,
+      "entries": 1,
+      "entry_bytes": 67108864
+     },
+     "digest": "024bb83d2379b3e9ee48e1aa6aa964ee080fd7cdb24e3dfa0b2616af4bfd0dce",
+     "process_s": 1.0281213310000226,
+     "cpu_s": 1.0205330000000004,
+     "peak_pss_bytes": 308968448
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.12429890399999977,
+     "counts": {
+      "source_bytes": 39057847,
+      "entries": 1,
+      "entry_bytes": 67108864
+     },
+     "digest": "024bb83d2379b3e9ee48e1aa6aa964ee080fd7cdb24e3dfa0b2616af4bfd0dce",
+     "process_s": 1.0271760029999655,
+     "cpu_s": 1.0199509999999918,
+     "peak_pss_bytes": 309596160
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.12352162700000235,
+     "counts": {
+      "source_bytes": 39057847,
+      "entries": 1,
+      "entry_bytes": 67108864
+     },
+     "digest": "024bb83d2379b3e9ee48e1aa6aa964ee080fd7cdb24e3dfa0b2616af4bfd0dce",
+     "process_s": 1.0416853009999727,
+     "cpu_s": 1.034084000000007,
+     "peak_pss_bytes": 296081408
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.12493293299996822,
+     "counts": {
+      "source_bytes": 39057847,
+      "entries": 1,
+      "entry_bytes": 67108864
+     },
+     "digest": "024bb83d2379b3e9ee48e1aa6aa964ee080fd7cdb24e3dfa0b2616af4bfd0dce",
+     "process_s": 1.045649940999965,
+     "cpu_s": 1.0382240000000138,
+     "peak_pss_bytes": 293458944
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.12427284599993982,
+     "counts": {
+      "source_bytes": 39057847,
+      "entries": 1,
+      "entry_bytes": 67108864
+     },
+     "digest": "024bb83d2379b3e9ee48e1aa6aa964ee080fd7cdb24e3dfa0b2616af4bfd0dce",
+     "process_s": 1.0347218930000963,
+     "cpu_s": 1.0278480000000627,
+     "peak_pss_bytes": 297843712
+    }
+   ]
+  },
+  {
+   "name": "load-many-blocks",
+   "impl": "unityrs",
+   "category": "load",
+   "timer": "load from bytes; read every entry's bytes",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "6",
+    "item": "LZ4 (2), LZ4HC (3)"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.19020683400000848,
+     "counts": {
+      "source_bytes": 39057847,
+      "entries": 1,
+      "entry_bytes": 67108864
+     },
+     "digest": "024bb83d2379b3e9ee48e1aa6aa964ee080fd7cdb24e3dfa0b2616af4bfd0dce",
+     "process_s": 0.5109015699999873,
+     "cpu_s": 0.48500300000000607,
+     "peak_pss_bytes": 189805568
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.10941386500002181,
+     "counts": {
+      "source_bytes": 39057847,
+      "entries": 1,
+      "entry_bytes": 67108864
+     },
+     "digest": "024bb83d2379b3e9ee48e1aa6aa964ee080fd7cdb24e3dfa0b2616af4bfd0dce",
+     "process_s": 0.45398570399999016,
+     "cpu_s": 0.4352580000000046,
+     "peak_pss_bytes": 183638016
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.10359520100001873,
+     "counts": {
+      "source_bytes": 39057847,
+      "entries": 1,
+      "entry_bytes": 67108864
+     },
+     "digest": "024bb83d2379b3e9ee48e1aa6aa964ee080fd7cdb24e3dfa0b2616af4bfd0dce",
+     "process_s": 0.40382053100000803,
+     "cpu_s": 0.39669000000000665,
+     "peak_pss_bytes": 187264000
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.10130749500001457,
+     "counts": {
+      "source_bytes": 39057847,
+      "entries": 1,
+      "entry_bytes": 67108864
+     },
+     "digest": "024bb83d2379b3e9ee48e1aa6aa964ee080fd7cdb24e3dfa0b2616af4bfd0dce",
+     "process_s": 0.46265552699998125,
+     "cpu_s": 0.44524400000003084,
+     "peak_pss_bytes": 178384896
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.12099250800002892,
+     "counts": {
+      "source_bytes": 39057847,
+      "entries": 1,
+      "entry_bytes": 67108864
+     },
+     "digest": "024bb83d2379b3e9ee48e1aa6aa964ee080fd7cdb24e3dfa0b2616af4bfd0dce",
+     "process_s": 0.4882506199999739,
+     "cpu_s": 0.46675399999998035,
+     "peak_pss_bytes": 207338496
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.10493985099992642,
+     "counts": {
+      "source_bytes": 39057847,
+      "entries": 1,
+      "entry_bytes": 67108864
+     },
+     "digest": "024bb83d2379b3e9ee48e1aa6aa964ee080fd7cdb24e3dfa0b2616af4bfd0dce",
+     "process_s": 0.40789800599998216,
+     "cpu_s": 0.40056199999997943,
+     "peak_pss_bytes": 179281920
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.16540472999997746,
+     "counts": {
+      "source_bytes": 39057847,
+      "entries": 1,
+      "entry_bytes": 67108864
+     },
+     "digest": "024bb83d2379b3e9ee48e1aa6aa964ee080fd7cdb24e3dfa0b2616af4bfd0dce",
+     "process_s": 0.5393723260000343,
+     "cpu_s": 0.5090789999999288,
+     "peak_pss_bytes": 207373312
+    }
+   ]
+  },
+  {
+   "name": "typetree-objects-lz4",
+   "impl": "unitypy",
+   "category": "typetree",
+   "timer": "parse_as_dict() on every object",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "8",
+    "item": "`ObjectReader.parse_as_dict`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.3161431210000103,
+     "counts": {
+      "source_bytes": 5087065,
+      "objects": 20000
+     },
+     "digest": "7f1af52205c9764934f4481567686266bf3edea4caf66a6a79f0de84868c9685",
+     "process_s": 4.311287738000004,
+     "cpu_s": 4.298244000000011,
+     "peak_pss_bytes": 336180224
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.35022023700003047,
+     "counts": {
+      "source_bytes": 5087065,
+      "objects": 20000
+     },
+     "digest": "7f1af52205c9764934f4481567686266bf3edea4caf66a6a79f0de84868c9685",
+     "process_s": 4.368328442999996,
+     "cpu_s": 4.353233999999986,
+     "peak_pss_bytes": 336179200
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.3330448140000044,
+     "counts": {
+      "source_bytes": 5087065,
+      "objects": 20000
+     },
+     "digest": "7f1af52205c9764934f4481567686266bf3edea4caf66a6a79f0de84868c9685",
+     "process_s": 4.3616749430000255,
+     "cpu_s": 4.346062000000018,
+     "peak_pss_bytes": 336163840
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.33854981700000053,
+     "counts": {
+      "source_bytes": 5087065,
+      "objects": 20000
+     },
+     "digest": "7f1af52205c9764934f4481567686266bf3edea4caf66a6a79f0de84868c9685",
+     "process_s": 4.378902843999981,
+     "cpu_s": 4.3658889999999815,
+     "peak_pss_bytes": 336151552
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.3402525730000434,
+     "counts": {
+      "source_bytes": 5087065,
+      "objects": 20000
+     },
+     "digest": "7f1af52205c9764934f4481567686266bf3edea4caf66a6a79f0de84868c9685",
+     "process_s": 4.377270750999969,
+     "cpu_s": 4.362929000000065,
+     "peak_pss_bytes": 336200704
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.34619944099995337,
+     "counts": {
+      "source_bytes": 5087065,
+      "objects": 20000
+     },
+     "digest": "7f1af52205c9764934f4481567686266bf3edea4caf66a6a79f0de84868c9685",
+     "process_s": 4.402894549000052,
+     "cpu_s": 4.3907140000000595,
+     "peak_pss_bytes": 336165888
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.34594479300005787,
+     "counts": {
+      "source_bytes": 5087065,
+      "objects": 20000
+     },
+     "digest": "7f1af52205c9764934f4481567686266bf3edea4caf66a6a79f0de84868c9685",
+     "process_s": 4.371818198000028,
+     "cpu_s": 4.3514920000000075,
+     "peak_pss_bytes": 336169984
+    }
+   ]
+  },
+  {
+   "name": "typetree-objects-lz4",
+   "impl": "unityrs",
+   "category": "typetree",
+   "timer": "parse_as_dict() on every object",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "8",
+    "item": "`ObjectReader.parse_as_dict`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.38898051499998587,
+     "counts": {
+      "source_bytes": 5087065,
+      "objects": 20000
+     },
+     "digest": "7f1af52205c9764934f4481567686266bf3edea4caf66a6a79f0de84868c9685",
+     "process_s": 3.8085358120000024,
+     "cpu_s": 3.7934630000000027,
+     "peak_pss_bytes": 289768448
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.398635473000013,
+     "counts": {
+      "source_bytes": 5087065,
+      "objects": 20000
+     },
+     "digest": "7f1af52205c9764934f4481567686266bf3edea4caf66a6a79f0de84868c9685",
+     "process_s": 3.831666904999963,
+     "cpu_s": 3.818743000000012,
+     "peak_pss_bytes": 289803264
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.39463434599997527,
+     "counts": {
+      "source_bytes": 5087065,
+      "objects": 20000
+     },
+     "digest": "7f1af52205c9764934f4481567686266bf3edea4caf66a6a79f0de84868c9685",
+     "process_s": 3.8330024569999637,
+     "cpu_s": 3.8166559999999947,
+     "peak_pss_bytes": 289776640
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.4102995020000435,
+     "counts": {
+      "source_bytes": 5087065,
+      "objects": 20000
+     },
+     "digest": "7f1af52205c9764934f4481567686266bf3edea4caf66a6a79f0de84868c9685",
+     "process_s": 3.8543641819999834,
+     "cpu_s": 3.838709999999992,
+     "peak_pss_bytes": 289802240
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.40489583900000525,
+     "counts": {
+      "source_bytes": 5087065,
+      "objects": 20000
+     },
+     "digest": "7f1af52205c9764934f4481567686266bf3edea4caf66a6a79f0de84868c9685",
+     "process_s": 3.871844906999968,
+     "cpu_s": 3.857189999999946,
+     "peak_pss_bytes": 289764352
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.41761460299994724,
+     "counts": {
+      "source_bytes": 5087065,
+      "objects": 20000
+     },
+     "digest": "7f1af52205c9764934f4481567686266bf3edea4caf66a6a79f0de84868c9685",
+     "process_s": 3.8731105979999256,
+     "cpu_s": 3.858304999999973,
+     "peak_pss_bytes": 289776640
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.40463970099995095,
+     "counts": {
+      "source_bytes": 5087065,
+      "objects": 20000
+     },
+     "digest": "7f1af52205c9764934f4481567686266bf3edea4caf66a6a79f0de84868c9685",
+     "process_s": 3.8584483460000456,
+     "cpu_s": 3.844661999999971,
+     "peak_pss_bytes": 289782784
+    }
+   ]
+  },
+  {
+   "name": "typetree-objects-2019",
+   "impl": "unitypy",
+   "category": "typetree",
+   "timer": "parse_as_dict() on every object",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "8",
+    "item": "`ObjectReader.parse_as_dict`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.32758406400000695,
+     "counts": {
+      "source_bytes": 23121792,
+      "objects": 20000
+     },
+     "digest": "7f1af52205c9764934f4481567686266bf3edea4caf66a6a79f0de84868c9685",
+     "process_s": 4.3292831320000005,
+     "cpu_s": 4.318219999999997,
+     "peak_pss_bytes": 331040768
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.3370784150000077,
+     "counts": {
+      "source_bytes": 23121792,
+      "objects": 20000
+     },
+     "digest": "7f1af52205c9764934f4481567686266bf3edea4caf66a6a79f0de84868c9685",
+     "process_s": 4.31812331499998,
+     "cpu_s": 4.307490000000001,
+     "peak_pss_bytes": 330991616
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.3464303270000073,
+     "counts": {
+      "source_bytes": 23121792,
+      "objects": 20000
+     },
+     "digest": "7f1af52205c9764934f4481567686266bf3edea4caf66a6a79f0de84868c9685",
+     "process_s": 4.3696959150000225,
+     "cpu_s": 4.355140999999975,
+     "peak_pss_bytes": 331013120
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.34140807699998277,
+     "counts": {
+      "source_bytes": 23121792,
+      "objects": 20000
+     },
+     "digest": "7f1af52205c9764934f4481567686266bf3edea4caf66a6a79f0de84868c9685",
+     "process_s": 4.357379013000013,
+     "cpu_s": 4.342275000000001,
+     "peak_pss_bytes": 330996736
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.3526078259999963,
+     "counts": {
+      "source_bytes": 23121792,
+      "objects": 20000
+     },
+     "digest": "7f1af52205c9764934f4481567686266bf3edea4caf66a6a79f0de84868c9685",
+     "process_s": 4.389867625000022,
+     "cpu_s": 4.376389000000017,
+     "peak_pss_bytes": 331008000
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.34385879800004204,
+     "counts": {
+      "source_bytes": 23121792,
+      "objects": 20000
+     },
+     "digest": "7f1af52205c9764934f4481567686266bf3edea4caf66a6a79f0de84868c9685",
+     "process_s": 4.390588630000025,
+     "cpu_s": 4.379394999999988,
+     "peak_pss_bytes": 330991616
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.3443712289999894,
+     "counts": {
+      "source_bytes": 23121792,
+      "objects": 20000
+     },
+     "digest": "7f1af52205c9764934f4481567686266bf3edea4caf66a6a79f0de84868c9685",
+     "process_s": 4.3559134900000345,
+     "cpu_s": 4.340948000000026,
+     "peak_pss_bytes": 331003904
+    }
+   ]
+  },
+  {
+   "name": "typetree-objects-2019",
+   "impl": "unityrs",
+   "category": "typetree",
+   "timer": "parse_as_dict() on every object",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "8",
+    "item": "`ObjectReader.parse_as_dict`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.378796723999983,
+     "counts": {
+      "source_bytes": 23121792,
+      "objects": 20000
+     },
+     "digest": "7f1af52205c9764934f4481567686266bf3edea4caf66a6a79f0de84868c9685",
+     "process_s": 3.800527493999965,
+     "cpu_s": 3.7896029999999854,
+     "peak_pss_bytes": 283722752
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.4005632920000153,
+     "counts": {
+      "source_bytes": 23121792,
+      "objects": 20000
+     },
+     "digest": "7f1af52205c9764934f4481567686266bf3edea4caf66a6a79f0de84868c9685",
+     "process_s": 3.832550916999992,
+     "cpu_s": 3.8208689999999876,
+     "peak_pss_bytes": 283659264
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.4020089780000262,
+     "counts": {
+      "source_bytes": 23121792,
+      "objects": 20000
+     },
+     "digest": "7f1af52205c9764934f4481567686266bf3edea4caf66a6a79f0de84868c9685",
+     "process_s": 3.8075959619999935,
+     "cpu_s": 3.796085000000005,
+     "peak_pss_bytes": 283722752
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.40582396900003914,
+     "counts": {
+      "source_bytes": 23121792,
+      "objects": 20000
+     },
+     "digest": "7f1af52205c9764934f4481567686266bf3edea4caf66a6a79f0de84868c9685",
+     "process_s": 3.85108988799999,
+     "cpu_s": 3.841746999999998,
+     "peak_pss_bytes": 283651072
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.4068257260000223,
+     "counts": {
+      "source_bytes": 23121792,
+      "objects": 20000
+     },
+     "digest": "7f1af52205c9764934f4481567686266bf3edea4caf66a6a79f0de84868c9685",
+     "process_s": 3.8531401700000174,
+     "cpu_s": 3.8448169999999777,
+     "peak_pss_bytes": 283712512
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.42538653400004023,
+     "counts": {
+      "source_bytes": 23121792,
+      "objects": 20000
+     },
+     "digest": "7f1af52205c9764934f4481567686266bf3edea4caf66a6a79f0de84868c9685",
+     "process_s": 3.8526526170001034,
+     "cpu_s": 3.8400510000000168,
+     "peak_pss_bytes": 283716608
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.42318546900003184,
+     "counts": {
+      "source_bytes": 23121792,
+      "objects": 20000
+     },
+     "digest": "7f1af52205c9764934f4481567686266bf3edea4caf66a6a79f0de84868c9685",
+     "process_s": 3.8529617290000715,
+     "cpu_s": 3.8414490000000114,
+     "peak_pss_bytes": 283711488
+    }
+   ]
+  },
+  {
+   "name": "texture-RGBA32",
+   "impl": "unitypy",
+   "category": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "17",
+    "item": "`RGBA32`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.017358633999947415,
+     "counts": {
+      "source_bytes": 16779182,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "6693b8aaaaaf7d98c9e8849b6cc6e7c7c668eaa88954a7112cc492529c0b816e",
+     "process_s": 0.8751496689999954,
+     "cpu_s": 1.1493919999999918,
+     "peak_pss_bytes": 148691968
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.01803723899996612,
+     "counts": {
+      "source_bytes": 16779182,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "6693b8aaaaaf7d98c9e8849b6cc6e7c7c668eaa88954a7112cc492529c0b816e",
+     "process_s": 0.8674178690000076,
+     "cpu_s": 1.146960000000007,
+     "peak_pss_bytes": 148700160
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.017771653000011156,
+     "counts": {
+      "source_bytes": 16779182,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "6693b8aaaaaf7d98c9e8849b6cc6e7c7c668eaa88954a7112cc492529c0b816e",
+     "process_s": 0.8789710980000223,
+     "cpu_s": 1.1567159999999888,
+     "peak_pss_bytes": 148689920
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.01879816299998538,
+     "counts": {
+      "source_bytes": 16779182,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "6693b8aaaaaf7d98c9e8849b6cc6e7c7c668eaa88954a7112cc492529c0b816e",
+     "process_s": 0.8899532340000178,
+     "cpu_s": 1.1733950000000277,
+     "peak_pss_bytes": 148707328
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.019006875999991735,
+     "counts": {
+      "source_bytes": 16779182,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "6693b8aaaaaf7d98c9e8849b6cc6e7c7c668eaa88954a7112cc492529c0b816e",
+     "process_s": 0.9110661089999894,
+     "cpu_s": 1.1962889999999788,
+     "peak_pss_bytes": 165429248
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.018616934999954537,
+     "counts": {
+      "source_bytes": 16779182,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "6693b8aaaaaf7d98c9e8849b6cc6e7c7c668eaa88954a7112cc492529c0b816e",
+     "process_s": 0.8834548119999681,
+     "cpu_s": 1.1701659999999947,
+     "peak_pss_bytes": 148728832
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.017943848999948386,
+     "counts": {
+      "source_bytes": 16779182,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "6693b8aaaaaf7d98c9e8849b6cc6e7c7c668eaa88954a7112cc492529c0b816e",
+     "process_s": 0.8687879010000188,
+     "cpu_s": 1.15481299999999,
+     "peak_pss_bytes": 148683776
+    }
+   ]
+  },
+  {
+   "name": "texture-RGBA32",
+   "impl": "unityrs",
+   "category": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "17",
+    "item": "`RGBA32`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.023694665999983044,
+     "counts": {
+      "source_bytes": 16779182,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "6693b8aaaaaf7d98c9e8849b6cc6e7c7c668eaa88954a7112cc492529c0b816e",
+     "process_s": 1.0916305819999934,
+     "cpu_s": 1.084600000000009,
+     "peak_pss_bytes": 159283200
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.026725729000020237,
+     "counts": {
+      "source_bytes": 16779182,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "6693b8aaaaaf7d98c9e8849b6cc6e7c7c668eaa88954a7112cc492529c0b816e",
+     "process_s": 1.1033390200000213,
+     "cpu_s": 1.0953059999999937,
+     "peak_pss_bytes": 161472512
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.023711531999992985,
+     "counts": {
+      "source_bytes": 16779182,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "6693b8aaaaaf7d98c9e8849b6cc6e7c7c668eaa88954a7112cc492529c0b816e",
+     "process_s": 1.1113574639999797,
+     "cpu_s": 1.1040250000000071,
+     "peak_pss_bytes": 150894592
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.028687416000025223,
+     "counts": {
+      "source_bytes": 16779182,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "6693b8aaaaaf7d98c9e8849b6cc6e7c7c668eaa88954a7112cc492529c0b816e",
+     "process_s": 1.122877456000026,
+     "cpu_s": 1.1141319999999837,
+     "peak_pss_bytes": 142370816
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.022562029000027906,
+     "counts": {
+      "source_bytes": 16779182,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "6693b8aaaaaf7d98c9e8849b6cc6e7c7c668eaa88954a7112cc492529c0b816e",
+     "process_s": 1.1412819990000003,
+     "cpu_s": 1.1327630000000113,
+     "peak_pss_bytes": 138424320
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.027668483999946147,
+     "counts": {
+      "source_bytes": 16779182,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "6693b8aaaaaf7d98c9e8849b6cc6e7c7c668eaa88954a7112cc492529c0b816e",
+     "process_s": 1.124882759000002,
+     "cpu_s": 1.1150460000000066,
+     "peak_pss_bytes": 138413056
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.02841240399993694,
+     "counts": {
+      "source_bytes": 16779182,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "6693b8aaaaaf7d98c9e8849b6cc6e7c7c668eaa88954a7112cc492529c0b816e",
+     "process_s": 1.1096544170000016,
+     "cpu_s": 1.1012139999999704,
+     "peak_pss_bytes": 145781760
+    }
+   ]
+  },
+  {
+   "name": "texture-RGB24",
+   "impl": "unitypy",
+   "category": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "17",
+    "item": "`RGB24`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.017952770000022156,
+     "counts": {
+      "source_bytes": 12584877,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "ea1b90f2a1be4d200a90a66ee9774cb0152c34077d2ba41157dbd10c2fc62bf4",
+     "process_s": 0.8531173310000213,
+     "cpu_s": 1.1309479999999894,
+     "peak_pss_bytes": 136111104
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.018853856000021096,
+     "counts": {
+      "source_bytes": 12584877,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "ea1b90f2a1be4d200a90a66ee9774cb0152c34077d2ba41157dbd10c2fc62bf4",
+     "process_s": 0.8715917190000368,
+     "cpu_s": 1.1528220000000147,
+     "peak_pss_bytes": 136113152
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.01911429599999792,
+     "counts": {
+      "source_bytes": 12584877,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "ea1b90f2a1be4d200a90a66ee9774cb0152c34077d2ba41157dbd10c2fc62bf4",
+     "process_s": 0.8764358990000005,
+     "cpu_s": 1.1617129999999918,
+     "peak_pss_bytes": 136126464
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.019231798999953753,
+     "counts": {
+      "source_bytes": 12584877,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "ea1b90f2a1be4d200a90a66ee9774cb0152c34077d2ba41157dbd10c2fc62bf4",
+     "process_s": 0.8817092900000034,
+     "cpu_s": 1.1688389999999913,
+     "peak_pss_bytes": 136147968
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.018448100999989947,
+     "counts": {
+      "source_bytes": 12584877,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "ea1b90f2a1be4d200a90a66ee9774cb0152c34077d2ba41157dbd10c2fc62bf4",
+     "process_s": 0.8831603349999568,
+     "cpu_s": 1.1698480000000018,
+     "peak_pss_bytes": 136189952
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.019011249999948632,
+     "counts": {
+      "source_bytes": 12584877,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "ea1b90f2a1be4d200a90a66ee9774cb0152c34077d2ba41157dbd10c2fc62bf4",
+     "process_s": 0.8780648360000214,
+     "cpu_s": 1.1601909999999975,
+     "peak_pss_bytes": 136111104
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.019504793000010068,
+     "counts": {
+      "source_bytes": 12584877,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "ea1b90f2a1be4d200a90a66ee9774cb0152c34077d2ba41157dbd10c2fc62bf4",
+     "process_s": 0.8806804580000289,
+     "cpu_s": 1.1646259999999984,
+     "peak_pss_bytes": 136121344
+    }
+   ]
+  },
+  {
+   "name": "texture-RGB24",
+   "impl": "unityrs",
+   "category": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "17",
+    "item": "`RGB24`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.027819475999990573,
+     "counts": {
+      "source_bytes": 12584877,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "ea1b90f2a1be4d200a90a66ee9774cb0152c34077d2ba41157dbd10c2fc62bf4",
+     "process_s": 1.09229065400001,
+     "cpu_s": 1.0843800000000101,
+     "peak_pss_bytes": 143669248
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.02736770799998567,
+     "counts": {
+      "source_bytes": 12584877,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "ea1b90f2a1be4d200a90a66ee9774cb0152c34077d2ba41157dbd10c2fc62bf4",
+     "process_s": 1.1034411819999832,
+     "cpu_s": 1.0967889999999727,
+     "peak_pss_bytes": 145811456
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.02928660699996044,
+     "counts": {
+      "source_bytes": 12584877,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "ea1b90f2a1be4d200a90a66ee9774cb0152c34077d2ba41157dbd10c2fc62bf4",
+     "process_s": 1.1052818729999672,
+     "cpu_s": 1.0980750000000228,
+     "peak_pss_bytes": 149841920
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.029678637999950297,
+     "counts": {
+      "source_bytes": 12584877,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "ea1b90f2a1be4d200a90a66ee9774cb0152c34077d2ba41157dbd10c2fc62bf4",
+     "process_s": 1.1150882979999892,
+     "cpu_s": 1.1041979999999967,
+     "peak_pss_bytes": 143544320
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.02928082699997958,
+     "counts": {
+      "source_bytes": 12584877,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "ea1b90f2a1be4d200a90a66ee9774cb0152c34077d2ba41157dbd10c2fc62bf4",
+     "process_s": 1.1170002209999552,
+     "cpu_s": 1.107783999999981,
+     "peak_pss_bytes": 136340480
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.02855351999994582,
+     "counts": {
+      "source_bytes": 12584877,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "ea1b90f2a1be4d200a90a66ee9774cb0152c34077d2ba41157dbd10c2fc62bf4",
+     "process_s": 1.1239130359999763,
+     "cpu_s": 1.1141489999999976,
+     "peak_pss_bytes": 136311808
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.027789610000013454,
+     "counts": {
+      "source_bytes": 12584877,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "ea1b90f2a1be4d200a90a66ee9774cb0152c34077d2ba41157dbd10c2fc62bf4",
+     "process_s": 1.1147654569999759,
+     "cpu_s": 1.107985000000042,
+     "peak_pss_bytes": 140293120
+    }
+   ]
+  },
+  {
+   "name": "texture-ARGB4444",
+   "impl": "unitypy",
+   "category": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "17",
+    "item": "`ARGB4444`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.030896812999969825,
+     "counts": {
+      "source_bytes": 8390603,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "96e7e63fd7820942c8e4206ba4112a9fe69bc5bc7b980f5f9d044cf81352875e",
+     "process_s": 0.8642718489999766,
+     "cpu_s": 1.1472669999999994,
+     "peak_pss_bytes": 123514880
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.0319849130000307,
+     "counts": {
+      "source_bytes": 8390603,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "96e7e63fd7820942c8e4206ba4112a9fe69bc5bc7b980f5f9d044cf81352875e",
+     "process_s": 0.8797399029999724,
+     "cpu_s": 1.1553540000000169,
+     "peak_pss_bytes": 118817792
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.030799815999955626,
+     "counts": {
+      "source_bytes": 8390603,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "96e7e63fd7820942c8e4206ba4112a9fe69bc5bc7b980f5f9d044cf81352875e",
+     "process_s": 0.8848449960000266,
+     "cpu_s": 1.1710899999999924,
+     "peak_pss_bytes": 123585536
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.031069483000010223,
+     "counts": {
+      "source_bytes": 8390603,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "96e7e63fd7820942c8e4206ba4112a9fe69bc5bc7b980f5f9d044cf81352875e",
+     "process_s": 0.8908692240000278,
+     "cpu_s": 1.1740899999999783,
+     "peak_pss_bytes": 123614208
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.030721246999974028,
+     "counts": {
+      "source_bytes": 8390603,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "96e7e63fd7820942c8e4206ba4112a9fe69bc5bc7b980f5f9d044cf81352875e",
+     "process_s": 0.8926518360000273,
+     "cpu_s": 1.1779660000000831,
+     "peak_pss_bytes": 123555840
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.0311865090000083,
+     "counts": {
+      "source_bytes": 8390603,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "96e7e63fd7820942c8e4206ba4112a9fe69bc5bc7b980f5f9d044cf81352875e",
+     "process_s": 0.8840687430000571,
+     "cpu_s": 1.1714240000000018,
+     "peak_pss_bytes": 123506688
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.03125319200000831,
+     "counts": {
+      "source_bytes": 8390603,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "96e7e63fd7820942c8e4206ba4112a9fe69bc5bc7b980f5f9d044cf81352875e",
+     "process_s": 0.8941587550000349,
+     "cpu_s": 1.175884999999937,
+     "peak_pss_bytes": 140350464
+    }
+   ]
+  },
+  {
+   "name": "texture-ARGB4444",
+   "impl": "unityrs",
+   "category": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "17",
+    "item": "`ARGB4444`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.022360429999991993,
+     "counts": {
+      "source_bytes": 8390603,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "96e7e63fd7820942c8e4206ba4112a9fe69bc5bc7b980f5f9d044cf81352875e",
+     "process_s": 1.0775553240000022,
+     "cpu_s": 1.0709220000000101,
+     "peak_pss_bytes": 150837248
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.022585058999993635,
+     "counts": {
+      "source_bytes": 8390603,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "96e7e63fd7820942c8e4206ba4112a9fe69bc5bc7b980f5f9d044cf81352875e",
+     "process_s": 1.088937739999949,
+     "cpu_s": 1.0833990000000142,
+     "peak_pss_bytes": 150873088
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.022856804000014108,
+     "counts": {
+      "source_bytes": 8390603,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "96e7e63fd7820942c8e4206ba4112a9fe69bc5bc7b980f5f9d044cf81352875e",
+     "process_s": 1.0899040430000468,
+     "cpu_s": 1.0845520000000022,
+     "peak_pss_bytes": 150945792
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.024503824000021268,
+     "counts": {
+      "source_bytes": 8390603,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "96e7e63fd7820942c8e4206ba4112a9fe69bc5bc7b980f5f9d044cf81352875e",
+     "process_s": 1.1126920230000223,
+     "cpu_s": 1.1038819999999987,
+     "peak_pss_bytes": 129565696
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.022762451999994937,
+     "counts": {
+      "source_bytes": 8390603,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "96e7e63fd7820942c8e4206ba4112a9fe69bc5bc7b980f5f9d044cf81352875e",
+     "process_s": 1.1108418750000055,
+     "cpu_s": 1.1047019999999748,
+     "peak_pss_bytes": 140184576
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.02488764000008814,
+     "counts": {
+      "source_bytes": 8390603,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "96e7e63fd7820942c8e4206ba4112a9fe69bc5bc7b980f5f9d044cf81352875e",
+     "process_s": 1.129053300999999,
+     "cpu_s": 1.121040999999991,
+     "peak_pss_bytes": 132002816
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.024298031000057563,
+     "counts": {
+      "source_bytes": 8390603,
+      "textures": 4,
+      "pixels": 4194304
+     },
+     "digest": "96e7e63fd7820942c8e4206ba4112a9fe69bc5bc7b980f5f9d044cf81352875e",
+     "process_s": 1.1221341149999944,
+     "cpu_s": 1.1139590000000226,
+     "peak_pss_bytes": 127815680
+    }
+   ]
+  },
+  {
+   "name": "texture-DXT1",
+   "impl": "unitypy",
+   "category": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "17",
+    "item": "`DXT1`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.036486372000013034,
+     "counts": {
+      "source_bytes": 4196714,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "debe8c1677703c659881fc33689c469215ace1ced1d9af5552e3c71a25f5b0fb",
+     "process_s": 0.8840444069999762,
+     "cpu_s": 1.1630089999999882,
+     "peak_pss_bytes": 124490752
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.03299918999999818,
+     "counts": {
+      "source_bytes": 4196714,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "debe8c1677703c659881fc33689c469215ace1ced1d9af5552e3c71a25f5b0fb",
+     "process_s": 0.8754389730000298,
+     "cpu_s": 1.155524999999983,
+     "peak_pss_bytes": 124259328
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.03462846600001512,
+     "counts": {
+      "source_bytes": 4196714,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "debe8c1677703c659881fc33689c469215ace1ced1d9af5552e3c71a25f5b0fb",
+     "process_s": 0.8983809370000131,
+     "cpu_s": 1.1785569999999836,
+     "peak_pss_bytes": 124551168
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.0356914640000241,
+     "counts": {
+      "source_bytes": 4196714,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "debe8c1677703c659881fc33689c469215ace1ced1d9af5552e3c71a25f5b0fb",
+     "process_s": 0.8888841490000345,
+     "cpu_s": 1.1689460000000622,
+     "peak_pss_bytes": 116141056
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.034607990999973026,
+     "counts": {
+      "source_bytes": 4196714,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "debe8c1677703c659881fc33689c469215ace1ced1d9af5552e3c71a25f5b0fb",
+     "process_s": 0.9034213310000041,
+     "cpu_s": 1.1903810000000021,
+     "peak_pss_bytes": 145657856
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.034898035999958665,
+     "counts": {
+      "source_bytes": 4196714,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "debe8c1677703c659881fc33689c469215ace1ced1d9af5552e3c71a25f5b0fb",
+     "process_s": 0.9003633099999888,
+     "cpu_s": 1.1812550000000215,
+     "peak_pss_bytes": 145639424
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.03596874200002276,
+     "counts": {
+      "source_bytes": 4196714,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "debe8c1677703c659881fc33689c469215ace1ced1d9af5552e3c71a25f5b0fb",
+     "process_s": 0.8934527250000883,
+     "cpu_s": 1.1741380000000277,
+     "peak_pss_bytes": 111942656
+    }
+   ]
+  },
+  {
+   "name": "texture-DXT1",
+   "impl": "unityrs",
+   "category": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "17",
+    "item": "`DXT1`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.035533773999986806,
+     "counts": {
+      "source_bytes": 4196714,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "debe8c1677703c659881fc33689c469215ace1ced1d9af5552e3c71a25f5b0fb",
+     "process_s": 1.1025849049999579,
+     "cpu_s": 1.095831000000004,
+     "peak_pss_bytes": 155169792
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.037236298999971496,
+     "counts": {
+      "source_bytes": 4196714,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "debe8c1677703c659881fc33689c469215ace1ced1d9af5552e3c71a25f5b0fb",
+     "process_s": 1.1086339729999963,
+     "cpu_s": 1.0993039999999894,
+     "peak_pss_bytes": 155222016
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.036796685000012985,
+     "counts": {
+      "source_bytes": 4196714,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "debe8c1677703c659881fc33689c469215ace1ced1d9af5552e3c71a25f5b0fb",
+     "process_s": 1.1185329979999779,
+     "cpu_s": 1.1091120000000103,
+     "peak_pss_bytes": 150945792
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.03731475399996498,
+     "counts": {
+      "source_bytes": 4196714,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "debe8c1677703c659881fc33689c469215ace1ced1d9af5552e3c71a25f5b0fb",
+     "process_s": 1.1353563969999527,
+     "cpu_s": 1.127997999999991,
+     "peak_pss_bytes": 134200320
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.036120252000046094,
+     "counts": {
+      "source_bytes": 4196714,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "debe8c1677703c659881fc33689c469215ace1ced1d9af5552e3c71a25f5b0fb",
+     "process_s": 1.1422803899999963,
+     "cpu_s": 1.1347869999999602,
+     "peak_pss_bytes": 146765824
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.038099895999948785,
+     "counts": {
+      "source_bytes": 4196714,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "debe8c1677703c659881fc33689c469215ace1ced1d9af5552e3c71a25f5b0fb",
+     "process_s": 1.1218007120000948,
+     "cpu_s": 1.1121089999999754,
+     "peak_pss_bytes": 142606336
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.03627091700002438,
+     "counts": {
+      "source_bytes": 4196714,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "debe8c1677703c659881fc33689c469215ace1ced1d9af5552e3c71a25f5b0fb",
+     "process_s": 1.1283406460000833,
+     "cpu_s": 1.1214919999999893,
+     "peak_pss_bytes": 142451712
+    }
+   ]
+  },
+  {
+   "name": "texture-BC4",
+   "impl": "unitypy",
+   "category": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "17",
+    "item": "`BC4`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.016257415000040965,
+     "counts": {
+      "source_bytes": 4196713,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "437f1112fa8453a7a38a7b956aeffdb360a39ea622a90efd883c94b6285a1776",
+     "process_s": 0.8309051030000205,
+     "cpu_s": 1.1093960000000038,
+     "peak_pss_bytes": 118379520
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.015955593000001045,
+     "counts": {
+      "source_bytes": 4196713,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "437f1112fa8453a7a38a7b956aeffdb360a39ea622a90efd883c94b6285a1776",
+     "process_s": 0.8326164680000261,
+     "cpu_s": 1.1142970000000219,
+     "peak_pss_bytes": 118359040
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.018762581000032696,
+     "counts": {
+      "source_bytes": 4196713,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "437f1112fa8453a7a38a7b956aeffdb360a39ea622a90efd883c94b6285a1776",
+     "process_s": 0.8554312039999559,
+     "cpu_s": 1.1379969999999844,
+     "peak_pss_bytes": 109853696
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.016325235000010707,
+     "counts": {
+      "source_bytes": 4196713,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "437f1112fa8453a7a38a7b956aeffdb360a39ea622a90efd883c94b6285a1776",
+     "process_s": 0.8487495669999703,
+     "cpu_s": 1.1327609999999595,
+     "peak_pss_bytes": 109865984
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.017341031999990264,
+     "counts": {
+      "source_bytes": 4196713,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "437f1112fa8453a7a38a7b956aeffdb360a39ea622a90efd883c94b6285a1776",
+     "process_s": 0.8694955299999947,
+     "cpu_s": 1.1461010000000442,
+     "peak_pss_bytes": 108772352
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.017987866999988,
+     "counts": {
+      "source_bytes": 4196713,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "437f1112fa8453a7a38a7b956aeffdb360a39ea622a90efd883c94b6285a1776",
+     "process_s": 0.8437883560000046,
+     "cpu_s": 1.1250059999999849,
+     "peak_pss_bytes": 111931392
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.016066652000063186,
+     "counts": {
+      "source_bytes": 4196713,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "437f1112fa8453a7a38a7b956aeffdb360a39ea622a90efd883c94b6285a1776",
+     "process_s": 0.8553874099999348,
+     "cpu_s": 1.1417050000000017,
+     "peak_pss_bytes": 110915584
+    }
+   ]
+  },
+  {
+   "name": "texture-BC4",
+   "impl": "unityrs",
+   "category": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "17",
+    "item": "`BC4`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.012208011000041097,
+     "counts": {
+      "source_bytes": 4196713,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "437f1112fa8453a7a38a7b956aeffdb360a39ea622a90efd883c94b6285a1776",
+     "process_s": 1.0560726610000302,
+     "cpu_s": 1.0480909999999994,
+     "peak_pss_bytes": 115593216
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.012353840999992372,
+     "counts": {
+      "source_bytes": 4196713,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "437f1112fa8453a7a38a7b956aeffdb360a39ea622a90efd883c94b6285a1776",
+     "process_s": 1.0692500110000083,
+     "cpu_s": 1.0620639999999923,
+     "peak_pss_bytes": 115470336
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.012503191000007519,
+     "counts": {
+      "source_bytes": 4196713,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "437f1112fa8453a7a38a7b956aeffdb360a39ea622a90efd883c94b6285a1776",
+     "process_s": 1.0618212219999918,
+     "cpu_s": 1.0563430000000267,
+     "peak_pss_bytes": 115466240
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.012480799000002207,
+     "counts": {
+      "source_bytes": 4196713,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "437f1112fa8453a7a38a7b956aeffdb360a39ea622a90efd883c94b6285a1776",
+     "process_s": 1.0718743159999917,
+     "cpu_s": 1.0637839999999983,
+     "peak_pss_bytes": 115462144
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.012383417000023655,
+     "counts": {
+      "source_bytes": 4196713,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "437f1112fa8453a7a38a7b956aeffdb360a39ea622a90efd883c94b6285a1776",
+     "process_s": 1.0914260000000127,
+     "cpu_s": 1.083042999999975,
+     "peak_pss_bytes": 125238272
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.012306980999937878,
+     "counts": {
+      "source_bytes": 4196713,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "437f1112fa8453a7a38a7b956aeffdb360a39ea622a90efd883c94b6285a1776",
+     "process_s": 1.0811575640000228,
+     "cpu_s": 1.0745170000000144,
+     "peak_pss_bytes": 115478528
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.012298432000079629,
+     "counts": {
+      "source_bytes": 4196713,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "437f1112fa8453a7a38a7b956aeffdb360a39ea622a90efd883c94b6285a1776",
+     "process_s": 1.089989133999893,
+     "cpu_s": 1.0833079999999882,
+     "peak_pss_bytes": 115439616
+    }
+   ]
+  },
+  {
+   "name": "texture-ETC_RGB4",
+   "impl": "unitypy",
+   "category": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "17",
+    "item": "`ETC_RGB4`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.05528773899999351,
+     "counts": {
+      "source_bytes": 4196778,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "518b9461e0a4e7e51d3a329c3957705e29b3b57a77f44c10296a38c0efb3707f",
+     "process_s": 0.8816239810000184,
+     "cpu_s": 1.1614090000000061,
+     "peak_pss_bytes": 129679360
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.055023576999985835,
+     "counts": {
+      "source_bytes": 4196778,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "518b9461e0a4e7e51d3a329c3957705e29b3b57a77f44c10296a38c0efb3707f",
+     "process_s": 0.9019692650000479,
+     "cpu_s": 1.1809670000000096,
+     "peak_pss_bytes": 148738048
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.05792669500004877,
+     "counts": {
+      "source_bytes": 4196778,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "518b9461e0a4e7e51d3a329c3957705e29b3b57a77f44c10296a38c0efb3707f",
+     "process_s": 0.9028415999999879,
+     "cpu_s": 1.1848930000000166,
+     "peak_pss_bytes": 152924160
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.05508654100003696,
+     "counts": {
+      "source_bytes": 4196778,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "518b9461e0a4e7e51d3a329c3957705e29b3b57a77f44c10296a38c0efb3707f",
+     "process_s": 0.9158806479999839,
+     "cpu_s": 1.1990949999999998,
+     "peak_pss_bytes": 152921088
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.05836911900001951,
+     "counts": {
+      "source_bytes": 4196778,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "518b9461e0a4e7e51d3a329c3957705e29b3b57a77f44c10296a38c0efb3707f",
+     "process_s": 0.9262531379999928,
+     "cpu_s": 1.2082520000000727,
+     "peak_pss_bytes": 152868864
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.058838943000068866,
+     "counts": {
+      "source_bytes": 4196778,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "518b9461e0a4e7e51d3a329c3957705e29b3b57a77f44c10296a38c0efb3707f",
+     "process_s": 0.9178091740000127,
+     "cpu_s": 1.1972630000000208,
+     "peak_pss_bytes": 152881152
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.059846808999964196,
+     "counts": {
+      "source_bytes": 4196778,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "518b9461e0a4e7e51d3a329c3957705e29b3b57a77f44c10296a38c0efb3707f",
+     "process_s": 0.9297883980000279,
+     "cpu_s": 1.2126560000000381,
+     "peak_pss_bytes": 148703232
+    }
+   ]
+  },
+  {
+   "name": "texture-ETC_RGB4",
+   "impl": "unityrs",
+   "category": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "17",
+    "item": "`ETC_RGB4`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.04568727100001979,
+     "counts": {
+      "source_bytes": 4196778,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "518b9461e0a4e7e51d3a329c3957705e29b3b57a77f44c10296a38c0efb3707f",
+     "process_s": 1.1118186720000267,
+     "cpu_s": 1.1061540000000036,
+     "peak_pss_bytes": 146697216
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.04566641299999219,
+     "counts": {
+      "source_bytes": 4196778,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "518b9461e0a4e7e51d3a329c3957705e29b3b57a77f44c10296a38c0efb3707f",
+     "process_s": 1.1254205209999668,
+     "cpu_s": 1.1186700000000087,
+     "peak_pss_bytes": 146654208
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.04635463799996842,
+     "counts": {
+      "source_bytes": 4196778,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "518b9461e0a4e7e51d3a329c3957705e29b3b57a77f44c10296a38c0efb3707f",
+     "process_s": 1.1223950039999977,
+     "cpu_s": 1.1156279999999867,
+     "peak_pss_bytes": 142432256
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.047201496000013776,
+     "counts": {
+      "source_bytes": 4196778,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "518b9461e0a4e7e51d3a329c3957705e29b3b57a77f44c10296a38c0efb3707f",
+     "process_s": 1.1410873919999744,
+     "cpu_s": 1.133038000000056,
+     "peak_pss_bytes": 138334208
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.04693110600004502,
+     "counts": {
+      "source_bytes": 4196778,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "518b9461e0a4e7e51d3a329c3957705e29b3b57a77f44c10296a38c0efb3707f",
+     "process_s": 1.1577604560000054,
+     "cpu_s": 1.1516149999999357,
+     "peak_pss_bytes": 159236096
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.0460229640000307,
+     "counts": {
+      "source_bytes": 4196778,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "518b9461e0a4e7e51d3a329c3957705e29b3b57a77f44c10296a38c0efb3707f",
+     "process_s": 1.128996073000053,
+     "cpu_s": 1.1213750000000005,
+     "peak_pss_bytes": 137031680
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.046417562999977235,
+     "counts": {
+      "source_bytes": 4196778,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "518b9461e0a4e7e51d3a329c3957705e29b3b57a77f44c10296a38c0efb3707f",
+     "process_s": 1.1512585819999686,
+     "cpu_s": 1.1435309999999959,
+     "peak_pss_bytes": 134029312
+    }
+   ]
+  },
+  {
+   "name": "texture-EAC_R",
+   "impl": "unitypy",
+   "category": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "17",
+    "item": "`EAC_R`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.04822333100003107,
+     "counts": {
+      "source_bytes": 4196715,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "b0311fc29a8ac87c7187b9d439d523e7d5948720f6cfe8bf0f63ef71ac3e002b",
+     "process_s": 0.8963990370000374,
+     "cpu_s": 1.1680120000000045,
+     "peak_pss_bytes": 127739904
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.04683919400002878,
+     "counts": {
+      "source_bytes": 4196715,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "b0311fc29a8ac87c7187b9d439d523e7d5948720f6cfe8bf0f63ef71ac3e002b",
+     "process_s": 0.8881032090000076,
+     "cpu_s": 1.1685109999999668,
+     "peak_pss_bytes": 127747072
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.0458379089999994,
+     "counts": {
+      "source_bytes": 4196715,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "b0311fc29a8ac87c7187b9d439d523e7d5948720f6cfe8bf0f63ef71ac3e002b",
+     "process_s": 0.8896773199999757,
+     "cpu_s": 1.1682719999999733,
+     "peak_pss_bytes": 152895488
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.04931859600003463,
+     "counts": {
+      "source_bytes": 4196715,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "b0311fc29a8ac87c7187b9d439d523e7d5948720f6cfe8bf0f63ef71ac3e002b",
+     "process_s": 0.9143489139999588,
+     "cpu_s": 1.1962189999999282,
+     "peak_pss_bytes": 152890368
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.046930299000052855,
+     "counts": {
+      "source_bytes": 4196715,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "b0311fc29a8ac87c7187b9d439d523e7d5948720f6cfe8bf0f63ef71ac3e002b",
+     "process_s": 0.9181595599999923,
+     "cpu_s": 1.2006579999999758,
+     "peak_pss_bytes": 152908800
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.04756721800004016,
+     "counts": {
+      "source_bytes": 4196715,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "b0311fc29a8ac87c7187b9d439d523e7d5948720f6cfe8bf0f63ef71ac3e002b",
+     "process_s": 0.912532337000016,
+     "cpu_s": 1.1958119999999894,
+     "peak_pss_bytes": 152901632
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.0469266529999004,
+     "counts": {
+      "source_bytes": 4196715,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "b0311fc29a8ac87c7187b9d439d523e7d5948720f6cfe8bf0f63ef71ac3e002b",
+     "process_s": 0.9163507230000505,
+     "cpu_s": 1.2019839999999817,
+     "peak_pss_bytes": 152919040
+    }
+   ]
+  },
+  {
+   "name": "texture-EAC_R",
+   "impl": "unityrs",
+   "category": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "17",
+    "item": "`EAC_R`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.035034825000025194,
+     "counts": {
+      "source_bytes": 4196715,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "b0311fc29a8ac87c7187b9d439d523e7d5948720f6cfe8bf0f63ef71ac3e002b",
+     "process_s": 1.0906497000000286,
+     "cpu_s": 1.0864259999999888,
+     "peak_pss_bytes": 159229952
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.03560224299997117,
+     "counts": {
+      "source_bytes": 4196715,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "b0311fc29a8ac87c7187b9d439d523e7d5948720f6cfe8bf0f63ef71ac3e002b",
+     "process_s": 1.117486552999992,
+     "cpu_s": 1.1094780000000242,
+     "peak_pss_bytes": 150859776
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.03647016200000053,
+     "counts": {
+      "source_bytes": 4196715,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "b0311fc29a8ac87c7187b9d439d523e7d5948720f6cfe8bf0f63ef71ac3e002b",
+     "process_s": 1.1149943550000216,
+     "cpu_s": 1.1069889999999987,
+     "peak_pss_bytes": 155047936
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.03669160199996213,
+     "counts": {
+      "source_bytes": 4196715,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "b0311fc29a8ac87c7187b9d439d523e7d5948720f6cfe8bf0f63ef71ac3e002b",
+     "process_s": 1.1370327559999964,
+     "cpu_s": 1.130708000000027,
+     "peak_pss_bytes": 142467072
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.038165997000021434,
+     "counts": {
+      "source_bytes": 4196715,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "b0311fc29a8ac87c7187b9d439d523e7d5948720f6cfe8bf0f63ef71ac3e002b",
+     "process_s": 1.1500341830000025,
+     "cpu_s": 1.142518999999993,
+     "peak_pss_bytes": 121244672
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.035801747000050455,
+     "counts": {
+      "source_bytes": 4196715,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "b0311fc29a8ac87c7187b9d439d523e7d5948720f6cfe8bf0f63ef71ac3e002b",
+     "process_s": 1.1167152420000548,
+     "cpu_s": 1.108901000000003,
+     "peak_pss_bytes": 150860800
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.03605062799999814,
+     "counts": {
+      "source_bytes": 4196715,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "b0311fc29a8ac87c7187b9d439d523e7d5948720f6cfe8bf0f63ef71ac3e002b",
+     "process_s": 1.1400592520000146,
+     "cpu_s": 1.131134999999972,
+     "peak_pss_bytes": 129887232
+    }
+   ]
+  },
+  {
+   "name": "texture-PVRTC_RGBA4",
+   "impl": "unitypy",
+   "category": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "17",
+    "item": "`PVRTC_RGBA4`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.3118154210000057,
+     "counts": {
+      "source_bytes": 4196785,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "c5358a05b04275df353a8c9abbab989ff85b5fc8a91bde09da011cc285fc75fd",
+     "process_s": 1.1633966329999907,
+     "cpu_s": 1.4379909999999967,
+     "peak_pss_bytes": 148742144
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.30867906800000355,
+     "counts": {
+      "source_bytes": 4196785,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "c5358a05b04275df353a8c9abbab989ff85b5fc8a91bde09da011cc285fc75fd",
+     "process_s": 1.1545253259999981,
+     "cpu_s": 1.4333389999999895,
+     "peak_pss_bytes": 148655104
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.3158904229999848,
+     "counts": {
+      "source_bytes": 4196785,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "c5358a05b04275df353a8c9abbab989ff85b5fc8a91bde09da011cc285fc75fd",
+     "process_s": 1.164699775000031,
+     "cpu_s": 1.439580000000035,
+     "peak_pss_bytes": 148748288
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.32072669600000836,
+     "counts": {
+      "source_bytes": 4196785,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "c5358a05b04275df353a8c9abbab989ff85b5fc8a91bde09da011cc285fc75fd",
+     "process_s": 1.175223950999964,
+     "cpu_s": 1.455855999999983,
+     "peak_pss_bytes": 148740096
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.3177800830000024,
+     "counts": {
+      "source_bytes": 4196785,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "c5358a05b04275df353a8c9abbab989ff85b5fc8a91bde09da011cc285fc75fd",
+     "process_s": 1.189869697000006,
+     "cpu_s": 1.4766440000000216,
+     "peak_pss_bytes": 152861696
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.3118559939999841,
+     "counts": {
+      "source_bytes": 4196785,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "c5358a05b04275df353a8c9abbab989ff85b5fc8a91bde09da011cc285fc75fd",
+     "process_s": 1.1660184990000744,
+     "cpu_s": 1.4469829999999888,
+     "peak_pss_bytes": 148719616
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.3178686319999997,
+     "counts": {
+      "source_bytes": 4196785,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "c5358a05b04275df353a8c9abbab989ff85b5fc8a91bde09da011cc285fc75fd",
+     "process_s": 1.1886374220000562,
+     "cpu_s": 1.4755409999999642,
+     "peak_pss_bytes": 152921088
+    }
+   ]
+  },
+  {
+   "name": "texture-PVRTC_RGBA4",
+   "impl": "unityrs",
+   "category": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "17",
+    "item": "`PVRTC_RGBA4`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.1250524000000155,
+     "counts": {
+      "source_bytes": 4196785,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "c5358a05b04275df353a8c9abbab989ff85b5fc8a91bde09da011cc285fc75fd",
+     "process_s": 1.1963547919999655,
+     "cpu_s": 1.190916999999999,
+     "peak_pss_bytes": 151056384
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.12275190200000452,
+     "counts": {
+      "source_bytes": 4196785,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "c5358a05b04275df353a8c9abbab989ff85b5fc8a91bde09da011cc285fc75fd",
+     "process_s": 1.2042158270000414,
+     "cpu_s": 1.1958800000000167,
+     "peak_pss_bytes": 159469568
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.12444733199998836,
+     "counts": {
+      "source_bytes": 4196785,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "c5358a05b04275df353a8c9abbab989ff85b5fc8a91bde09da011cc285fc75fd",
+     "process_s": 1.2020372189999762,
+     "cpu_s": 1.1964000000000112,
+     "peak_pss_bytes": 159434752
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.12218638400003101,
+     "counts": {
+      "source_bytes": 4196785,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "c5358a05b04275df353a8c9abbab989ff85b5fc8a91bde09da011cc285fc75fd",
+     "process_s": 1.2069886320000478,
+     "cpu_s": 1.2014550000000668,
+     "peak_pss_bytes": 159444992
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.12334900199999765,
+     "counts": {
+      "source_bytes": 4196785,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "c5358a05b04275df353a8c9abbab989ff85b5fc8a91bde09da011cc285fc75fd",
+     "process_s": 1.2304304909999928,
+     "cpu_s": 1.2228240000000028,
+     "peak_pss_bytes": 159409152
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.12207213299996056,
+     "counts": {
+      "source_bytes": 4196785,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "c5358a05b04275df353a8c9abbab989ff85b5fc8a91bde09da011cc285fc75fd",
+     "process_s": 1.196707745000026,
+     "cpu_s": 1.190890999999965,
+     "peak_pss_bytes": 159423488
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.12411998300001414,
+     "counts": {
+      "source_bytes": 4196785,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "c5358a05b04275df353a8c9abbab989ff85b5fc8a91bde09da011cc285fc75fd",
+     "process_s": 1.2205648080000628,
+     "cpu_s": 1.2147210000000541,
+     "peak_pss_bytes": 159501312
+    }
+   ]
+  },
+  {
+   "name": "texture-DXT5",
+   "impl": "unitypy",
+   "category": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "17",
+    "item": "`DXT5`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.040511303000016596,
+     "counts": {
+      "source_bytes": 8391019,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "4377a07ad3ffc0d7686d74c052b6f67308e9cb36f4ae6559a7cc4f251df29a34",
+     "process_s": 0.8931769459999828,
+     "cpu_s": 1.1691319999999905,
+     "peak_pss_bytes": 163289088
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.0419672550000314,
+     "counts": {
+      "source_bytes": 8391019,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "4377a07ad3ffc0d7686d74c052b6f67308e9cb36f4ae6559a7cc4f251df29a34",
+     "process_s": 0.9043389830000024,
+     "cpu_s": 1.183146999999991,
+     "peak_pss_bytes": 163273728
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.04012704799998801,
+     "counts": {
+      "source_bytes": 8391019,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "4377a07ad3ffc0d7686d74c052b6f67308e9cb36f4ae6559a7cc4f251df29a34",
+     "process_s": 0.8835708099999806,
+     "cpu_s": 1.1647609999999986,
+     "peak_pss_bytes": 163338240
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.03939161499999955,
+     "counts": {
+      "source_bytes": 8391019,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "4377a07ad3ffc0d7686d74c052b6f67308e9cb36f4ae6559a7cc4f251df29a34",
+     "process_s": 0.9036755489999564,
+     "cpu_s": 1.1795499999999493,
+     "peak_pss_bytes": 163293184
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.039366949999987355,
+     "counts": {
+      "source_bytes": 8391019,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "4377a07ad3ffc0d7686d74c052b6f67308e9cb36f4ae6559a7cc4f251df29a34",
+     "process_s": 0.9085951140000361,
+     "cpu_s": 1.1962770000000091,
+     "peak_pss_bytes": 163393536
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.04060844699995414,
+     "counts": {
+      "source_bytes": 8391019,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "4377a07ad3ffc0d7686d74c052b6f67308e9cb36f4ae6559a7cc4f251df29a34",
+     "process_s": 0.9021038569999291,
+     "cpu_s": 1.1829030000000103,
+     "peak_pss_bytes": 163314688
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.039898880999999164,
+     "counts": {
+      "source_bytes": 8391019,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "4377a07ad3ffc0d7686d74c052b6f67308e9cb36f4ae6559a7cc4f251df29a34",
+     "process_s": 0.9141997379999793,
+     "cpu_s": 1.2000309999999672,
+     "peak_pss_bytes": 163354624
+    }
+   ]
+  },
+  {
+   "name": "texture-DXT5",
+   "impl": "unityrs",
+   "category": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "17",
+    "item": "`DXT5`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.039450710999972216,
+     "counts": {
+      "source_bytes": 8391019,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "4377a07ad3ffc0d7686d74c052b6f67308e9cb36f4ae6559a7cc4f251df29a34",
+     "process_s": 1.1225353810000342,
+     "cpu_s": 1.114713000000009,
+     "peak_pss_bytes": 149954560
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.04035339199998589,
+     "counts": {
+      "source_bytes": 8391019,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "4377a07ad3ffc0d7686d74c052b6f67308e9cb36f4ae6559a7cc4f251df29a34",
+     "process_s": 1.1322794369999656,
+     "cpu_s": 1.1240519999999776,
+     "peak_pss_bytes": 146765824
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.040876081999954295,
+     "counts": {
+      "source_bytes": 8391019,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "4377a07ad3ffc0d7686d74c052b6f67308e9cb36f4ae6559a7cc4f251df29a34",
+     "process_s": 1.1201161060000118,
+     "cpu_s": 1.1114969999999857,
+     "peak_pss_bytes": 146808832
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.041486555000005865,
+     "counts": {
+      "source_bytes": 8391019,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "4377a07ad3ffc0d7686d74c052b6f67308e9cb36f4ae6559a7cc4f251df29a34",
+     "process_s": 1.1460092919999738,
+     "cpu_s": 1.1388670000000616,
+     "peak_pss_bytes": 138412032
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.04178614100004552,
+     "counts": {
+      "source_bytes": 8391019,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "4377a07ad3ffc0d7686d74c052b6f67308e9cb36f4ae6559a7cc4f251df29a34",
+     "process_s": 1.1549474320000286,
+     "cpu_s": 1.1463549999999714,
+     "peak_pss_bytes": 167792640
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.039120135999951344,
+     "counts": {
+      "source_bytes": 8391019,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "4377a07ad3ffc0d7686d74c052b6f67308e9cb36f4ae6559a7cc4f251df29a34",
+     "process_s": 1.1244323170000143,
+     "cpu_s": 1.1180980000000318,
+     "peak_pss_bytes": 146814976
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.04021597600001314,
+     "counts": {
+      "source_bytes": 8391019,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "4377a07ad3ffc0d7686d74c052b6f67308e9cb36f4ae6559a7cc4f251df29a34",
+     "process_s": 1.1559903240000722,
+     "cpu_s": 1.1494140000000357,
+     "peak_pss_bytes": 167778304
+    }
+   ]
+  },
+  {
+   "name": "texture-BC5",
+   "impl": "unitypy",
+   "category": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "17",
+    "item": "`BC5`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.04286134799997399,
+     "counts": {
+      "source_bytes": 8391018,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "72062ae2a651a5a73f68421db17c6ad4f8a4bb5cb9f599fe21697d5977da8614",
+     "process_s": 0.8788814220000063,
+     "cpu_s": 1.1570059999999813,
+     "peak_pss_bytes": 137123840
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.040453657000000476,
+     "counts": {
+      "source_bytes": 8391018,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "72062ae2a651a5a73f68421db17c6ad4f8a4bb5cb9f599fe21697d5977da8614",
+     "process_s": 0.8999853070000086,
+     "cpu_s": 1.1767690000000073,
+     "peak_pss_bytes": 158099456
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.04075742100002344,
+     "counts": {
+      "source_bytes": 8391018,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "72062ae2a651a5a73f68421db17c6ad4f8a4bb5cb9f599fe21697d5977da8614",
+     "process_s": 0.9163002229999506,
+     "cpu_s": 1.2019049999999822,
+     "peak_pss_bytes": 158015488
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.0438538600000129,
+     "counts": {
+      "source_bytes": 8391018,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "72062ae2a651a5a73f68421db17c6ad4f8a4bb5cb9f599fe21697d5977da8614",
+     "process_s": 0.9257489789999909,
+     "cpu_s": 1.2129009999999312,
+     "peak_pss_bytes": 153943040
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.041961042999957954,
+     "counts": {
+      "source_bytes": 8391018,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "72062ae2a651a5a73f68421db17c6ad4f8a4bb5cb9f599fe21697d5977da8614",
+     "process_s": 0.9177465620000476,
+     "cpu_s": 1.2030829999999924,
+     "peak_pss_bytes": 158109696
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.041286499999955595,
+     "counts": {
+      "source_bytes": 8391018,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "72062ae2a651a5a73f68421db17c6ad4f8a4bb5cb9f599fe21697d5977da8614",
+     "process_s": 0.9065859749999845,
+     "cpu_s": 1.1830929999999853,
+     "peak_pss_bytes": 158075904
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.04281835200004025,
+     "counts": {
+      "source_bytes": 8391018,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "72062ae2a651a5a73f68421db17c6ad4f8a4bb5cb9f599fe21697d5977da8614",
+     "process_s": 0.9390465279999489,
+     "cpu_s": 1.2224140000000148,
+     "peak_pss_bytes": 153899008
+    }
+   ]
+  },
+  {
+   "name": "texture-BC5",
+   "impl": "unityrs",
+   "category": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "17",
+    "item": "`BC5`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.043274435999990146,
+     "counts": {
+      "source_bytes": 8391018,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "72062ae2a651a5a73f68421db17c6ad4f8a4bb5cb9f599fe21697d5977da8614",
+     "process_s": 1.1042055629999936,
+     "cpu_s": 1.0987410000000182,
+     "peak_pss_bytes": 155267072
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.04423668600003339,
+     "counts": {
+      "source_bytes": 8391018,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "72062ae2a651a5a73f68421db17c6ad4f8a4bb5cb9f599fe21697d5977da8614",
+     "process_s": 1.1207836510000107,
+     "cpu_s": 1.1142419999999902,
+     "peak_pss_bytes": 146132992
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.04349677799996243,
+     "counts": {
+      "source_bytes": 8391018,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "72062ae2a651a5a73f68421db17c6ad4f8a4bb5cb9f599fe21697d5977da8614",
+     "process_s": 1.1200349229999915,
+     "cpu_s": 1.1125700000000052,
+     "peak_pss_bytes": 141941760
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.044261516999995365,
+     "counts": {
+      "source_bytes": 8391018,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "72062ae2a651a5a73f68421db17c6ad4f8a4bb5cb9f599fe21697d5977da8614",
+     "process_s": 1.1561079580000069,
+     "cpu_s": 1.1482090000000085,
+     "peak_pss_bytes": 150757376
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.04461255500001471,
+     "counts": {
+      "source_bytes": 8391018,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "72062ae2a651a5a73f68421db17c6ad4f8a4bb5cb9f599fe21697d5977da8614",
+     "process_s": 1.1526977880000118,
+     "cpu_s": 1.1444349999999872,
+     "peak_pss_bytes": 150753280
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.04718065200006549,
+     "counts": {
+      "source_bytes": 8391018,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "72062ae2a651a5a73f68421db17c6ad4f8a4bb5cb9f599fe21697d5977da8614",
+     "process_s": 1.1708457480000334,
+     "cpu_s": 1.1624329999999645,
+     "peak_pss_bytes": 150781952
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.043147818000079496,
+     "counts": {
+      "source_bytes": 8391018,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "72062ae2a651a5a73f68421db17c6ad4f8a4bb5cb9f599fe21697d5977da8614",
+     "process_s": 1.150396174999969,
+     "cpu_s": 1.143462999999997,
+     "peak_pss_bytes": 130339840
+    }
+   ]
+  },
+  {
+   "name": "texture-BC6H",
+   "impl": "unitypy",
+   "category": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "paired": false,
+   "reason": "PARITY.md row is Tier B",
+   "parity_row": {
+    "section": "17",
+    "item": "`BC6H`"
+   },
+   "tier": "B",
+   "runs": [
+    {
+     "round": 0,
+     "status": "raised:ValueError",
+     "scope_s": 0.002160081999988961,
+     "counts": {
+      "source_bytes": 8391019
+     },
+     "digest": null,
+     "process_s": 0.8265968790000215,
+     "cpu_s": 1.1080170000000038,
+     "peak_pss_bytes": 113304576
+    },
+    {
+     "round": 1,
+     "status": "raised:ValueError",
+     "scope_s": 0.0023132029999715087,
+     "counts": {
+      "source_bytes": 8391019
+     },
+     "digest": null,
+     "process_s": 0.8355265590000158,
+     "cpu_s": 1.1156030000000214,
+     "peak_pss_bytes": 123557888
+    },
+    {
+     "round": 2,
+     "status": "raised:ValueError",
+     "scope_s": 0.002205306999996992,
+     "counts": {
+      "source_bytes": 8391019
+     },
+     "digest": null,
+     "process_s": 0.8230769360000068,
+     "cpu_s": 1.1031349999999804,
+     "peak_pss_bytes": 113331200
+    },
+    {
+     "round": 3,
+     "status": "raised:ValueError",
+     "scope_s": 0.0024060940000367737,
+     "counts": {
+      "source_bytes": 8391019
+     },
+     "digest": null,
+     "process_s": 0.8595939869999825,
+     "cpu_s": 1.1386430000000018,
+     "peak_pss_bytes": 123476992
+    },
+    {
+     "round": 4,
+     "status": "raised:ValueError",
+     "scope_s": 0.002202543999999307,
+     "counts": {
+      "source_bytes": 8391019
+     },
+     "digest": null,
+     "process_s": 0.839746282999954,
+     "cpu_s": 1.125464000000079,
+     "peak_pss_bytes": 123535360
+    },
+    {
+     "round": 5,
+     "status": "raised:ValueError",
+     "scope_s": 0.002281267999933334,
+     "counts": {
+      "source_bytes": 8391019
+     },
+     "digest": null,
+     "process_s": 0.8559183749999875,
+     "cpu_s": 1.1366150000000061,
+     "peak_pss_bytes": 123528192
+    },
+    {
+     "round": 6,
+     "status": "raised:ValueError",
+     "scope_s": 0.0024082600000383536,
+     "counts": {
+      "source_bytes": 8391019
+     },
+     "digest": null,
+     "process_s": 0.8583439169999565,
+     "cpu_s": 1.1461539999999673,
+     "peak_pss_bytes": 123495424
+    }
+   ]
+  },
+  {
+   "name": "texture-BC6H",
+   "impl": "unityrs",
+   "category": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "paired": false,
+   "reason": "PARITY.md row is Tier B",
+   "parity_row": {
+    "section": "17",
+    "item": "`BC6H`"
+   },
+   "tier": "B",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.06609346699997332,
+     "counts": {
+      "source_bytes": 8391019,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "18c6ab0eaf8a998f3bd95d8446a6263d4dda858177c595f559a4108001a72819",
+     "process_s": 1.1384200360000136,
+     "cpu_s": 1.1312580000000025,
+     "peak_pss_bytes": 150776832
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.06833867199998167,
+     "counts": {
+      "source_bytes": 8391019,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "18c6ab0eaf8a998f3bd95d8446a6263d4dda858177c595f559a4108001a72819",
+     "process_s": 1.1483438610000007,
+     "cpu_s": 1.142419000000018,
+     "peak_pss_bytes": 150732800
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.06819661399998722,
+     "counts": {
+      "source_bytes": 8391019,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "18c6ab0eaf8a998f3bd95d8446a6263d4dda858177c595f559a4108001a72819",
+     "process_s": 1.1448475579999808,
+     "cpu_s": 1.1384140000000116,
+     "peak_pss_bytes": 150745088
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.06797984399997858,
+     "counts": {
+      "source_bytes": 8391019,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "18c6ab0eaf8a998f3bd95d8446a6263d4dda858177c595f559a4108001a72819",
+     "process_s": 1.1844253049999907,
+     "cpu_s": 1.1764180000000124,
+     "peak_pss_bytes": 160371712
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.06940515499996991,
+     "counts": {
+      "source_bytes": 8391019,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "18c6ab0eaf8a998f3bd95d8446a6263d4dda858177c595f559a4108001a72819",
+     "process_s": 1.16252506699999,
+     "cpu_s": 1.1550009999999702,
+     "peak_pss_bytes": 150743040
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.06887428900006398,
+     "counts": {
+      "source_bytes": 8391019,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "18c6ab0eaf8a998f3bd95d8446a6263d4dda858177c595f559a4108001a72819",
+     "process_s": 1.1878999320000503,
+     "cpu_s": 1.179187000000013,
+     "peak_pss_bytes": 156626944
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.06883078900000328,
+     "counts": {
+      "source_bytes": 8391019,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "18c6ab0eaf8a998f3bd95d8446a6263d4dda858177c595f559a4108001a72819",
+     "process_s": 1.1828917450000063,
+     "cpu_s": 1.1757369999999696,
+     "peak_pss_bytes": 157829120
+    }
+   ]
+  },
+  {
+   "name": "texture-BC7",
+   "impl": "unitypy",
+   "category": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "17",
+    "item": "`BC7`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.08274557300001106,
+     "counts": {
+      "source_bytes": 8391018,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "a261eb15c7b5f1ab9d8d85c94e1acb5cbfb90166a826c41425e759c931d8df9b",
+     "process_s": 0.9419906720000313,
+     "cpu_s": 1.219064000000003,
+     "peak_pss_bytes": 154889216
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.07940505100003747,
+     "counts": {
+      "source_bytes": 8391018,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "a261eb15c7b5f1ab9d8d85c94e1acb5cbfb90166a826c41425e759c931d8df9b",
+     "process_s": 0.9451082119999796,
+     "cpu_s": 1.2294639999999788,
+     "peak_pss_bytes": 146539520
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.077573568000048,
+     "counts": {
+      "source_bytes": 8391018,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "a261eb15c7b5f1ab9d8d85c94e1acb5cbfb90166a826c41425e759c931d8df9b",
+     "process_s": 0.9260260670000093,
+     "cpu_s": 1.2114509999999825,
+     "peak_pss_bytes": 154962944
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.07837966200003166,
+     "counts": {
+      "source_bytes": 8391018,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "a261eb15c7b5f1ab9d8d85c94e1acb5cbfb90166a826c41425e759c931d8df9b",
+     "process_s": 0.9587533849999659,
+     "cpu_s": 1.2433199999999829,
+     "peak_pss_bytes": 163304448
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.0811263069999768,
+     "counts": {
+      "source_bytes": 8391018,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "a261eb15c7b5f1ab9d8d85c94e1acb5cbfb90166a826c41425e759c931d8df9b",
+     "process_s": 0.9684460720000061,
+     "cpu_s": 1.2533349999999928,
+     "peak_pss_bytes": 163328000
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.07907817099999193,
+     "counts": {
+      "source_bytes": 8391018,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "a261eb15c7b5f1ab9d8d85c94e1acb5cbfb90166a826c41425e759c931d8df9b",
+     "process_s": 0.9615966730000309,
+     "cpu_s": 1.2473740000000362,
+     "peak_pss_bytes": 163281920
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.07976108399998338,
+     "counts": {
+      "source_bytes": 8391018,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "a261eb15c7b5f1ab9d8d85c94e1acb5cbfb90166a826c41425e759c931d8df9b",
+     "process_s": 0.9643317389999311,
+     "cpu_s": 1.2448459999999955,
+     "peak_pss_bytes": 163271680
+    }
+   ]
+  },
+  {
+   "name": "texture-BC7",
+   "impl": "unityrs",
+   "category": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "17",
+    "item": "`BC7`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.042758921000029204,
+     "counts": {
+      "source_bytes": 8391018,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "a261eb15c7b5f1ab9d8d85c94e1acb5cbfb90166a826c41425e759c931d8df9b",
+     "process_s": 1.1242566980000106,
+     "cpu_s": 1.1161299999999983,
+     "peak_pss_bytes": 150986752
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.042885634000015216,
+     "counts": {
+      "source_bytes": 8391018,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "a261eb15c7b5f1ab9d8d85c94e1acb5cbfb90166a826c41425e759c931d8df9b",
+     "process_s": 1.1268806669999663,
+     "cpu_s": 1.12145000000001,
+     "peak_pss_bytes": 148755456
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.04496876799998972,
+     "counts": {
+      "source_bytes": 8391018,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "a261eb15c7b5f1ab9d8d85c94e1acb5cbfb90166a826c41425e759c931d8df9b",
+     "process_s": 1.1287355050000087,
+     "cpu_s": 1.1220070000000248,
+     "peak_pss_bytes": 150999040
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.043258016000038424,
+     "counts": {
+      "source_bytes": 8391018,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "a261eb15c7b5f1ab9d8d85c94e1acb5cbfb90166a826c41425e759c931d8df9b",
+     "process_s": 1.1718881399999646,
+     "cpu_s": 1.1656360000000063,
+     "peak_pss_bytes": 167760896
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.04566815100002941,
+     "counts": {
+      "source_bytes": 8391018,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "a261eb15c7b5f1ab9d8d85c94e1acb5cbfb90166a826c41425e759c931d8df9b",
+     "process_s": 1.155678518000002,
+     "cpu_s": 1.1468899999999849,
+     "peak_pss_bytes": 167773184
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.0436729140000125,
+     "counts": {
+      "source_bytes": 8391018,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "a261eb15c7b5f1ab9d8d85c94e1acb5cbfb90166a826c41425e759c931d8df9b",
+     "process_s": 1.1459324050000532,
+     "cpu_s": 1.139948000000004,
+     "peak_pss_bytes": 138412032
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.04405580899992856,
+     "counts": {
+      "source_bytes": 8391018,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "a261eb15c7b5f1ab9d8d85c94e1acb5cbfb90166a826c41425e759c931d8df9b",
+     "process_s": 1.1703520889999481,
+     "cpu_s": 1.1641890000000217,
+     "peak_pss_bytes": 167780352
+    }
+   ]
+  },
+  {
+   "name": "texture-ETC2_RGBA8",
+   "impl": "unitypy",
+   "category": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "17",
+    "item": "`ETC2_RGBA8`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.07031650199996875,
+     "counts": {
+      "source_bytes": 8391085,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "16cae0a2716e40658d719a663b5d5fce25dfde7e9ebfec26d5d8f2850ad58cbd",
+     "process_s": 0.9376303149999785,
+     "cpu_s": 1.2150819999999953,
+     "peak_pss_bytes": 157149184
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.06890488399994865,
+     "counts": {
+      "source_bytes": 8391085,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "16cae0a2716e40658d719a663b5d5fce25dfde7e9ebfec26d5d8f2850ad58cbd",
+     "process_s": 0.9243515140000227,
+     "cpu_s": 1.1992289999999741,
+     "peak_pss_bytes": 161321984
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.0726504130000194,
+     "counts": {
+      "source_bytes": 8391085,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "16cae0a2716e40658d719a663b5d5fce25dfde7e9ebfec26d5d8f2850ad58cbd",
+     "process_s": 0.9276110379999523,
+     "cpu_s": 1.2087920000000167,
+     "peak_pss_bytes": 157101056
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.06821780699999636,
+     "counts": {
+      "source_bytes": 8391085,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "16cae0a2716e40658d719a663b5d5fce25dfde7e9ebfec26d5d8f2850ad58cbd",
+     "process_s": 0.9620503699999858,
+     "cpu_s": 1.2488370000000373,
+     "peak_pss_bytes": 148413440
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.07038900800000647,
+     "counts": {
+      "source_bytes": 8391085,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "16cae0a2716e40658d719a663b5d5fce25dfde7e9ebfec26d5d8f2850ad58cbd",
+     "process_s": 0.9531559970000103,
+     "cpu_s": 1.233246999999949,
+     "peak_pss_bytes": 155591680
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.068435036999972,
+     "counts": {
+      "source_bytes": 8391085,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "16cae0a2716e40658d719a663b5d5fce25dfde7e9ebfec26d5d8f2850ad58cbd",
+     "process_s": 0.9461141289999659,
+     "cpu_s": 1.232120000000009,
+     "peak_pss_bytes": 155400192
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.06791133799993077,
+     "counts": {
+      "source_bytes": 8391085,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "16cae0a2716e40658d719a663b5d5fce25dfde7e9ebfec26d5d8f2850ad58cbd",
+     "process_s": 0.9455501869999807,
+     "cpu_s": 1.229395000000011,
+     "peak_pss_bytes": 157107200
+    }
+   ]
+  },
+  {
+   "name": "texture-ETC2_RGBA8",
+   "impl": "unityrs",
+   "category": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "17",
+    "item": "`ETC2_RGBA8`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.05323610700003201,
+     "counts": {
+      "source_bytes": 8391085,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "16cae0a2716e40658d719a663b5d5fce25dfde7e9ebfec26d5d8f2850ad58cbd",
+     "process_s": 1.135662755999988,
+     "cpu_s": 1.1305030000000045,
+     "peak_pss_bytes": 150343680
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.05355422100001306,
+     "counts": {
+      "source_bytes": 8391085,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "16cae0a2716e40658d719a663b5d5fce25dfde7e9ebfec26d5d8f2850ad58cbd",
+     "process_s": 1.134552172000042,
+     "cpu_s": 1.1286510000000192,
+     "peak_pss_bytes": 146657280
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.05299557000000732,
+     "counts": {
+      "source_bytes": 8391085,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "16cae0a2716e40658d719a663b5d5fce25dfde7e9ebfec26d5d8f2850ad58cbd",
+     "process_s": 1.1315537879999624,
+     "cpu_s": 1.125298999999984,
+     "peak_pss_bytes": 146722816
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.0529142130000082,
+     "counts": {
+      "source_bytes": 8391085,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "16cae0a2716e40658d719a663b5d5fce25dfde7e9ebfec26d5d8f2850ad58cbd",
+     "process_s": 1.1546639200000186,
+     "cpu_s": 1.1462669999999662,
+     "peak_pss_bytes": 167616512
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.05373871799997687,
+     "counts": {
+      "source_bytes": 8391085,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "16cae0a2716e40658d719a663b5d5fce25dfde7e9ebfec26d5d8f2850ad58cbd",
+     "process_s": 1.1672468230000277,
+     "cpu_s": 1.161104000000023,
+     "peak_pss_bytes": 167626752
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.05491373100005603,
+     "counts": {
+      "source_bytes": 8391085,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "16cae0a2716e40658d719a663b5d5fce25dfde7e9ebfec26d5d8f2850ad58cbd",
+     "process_s": 1.1576581780000197,
+     "cpu_s": 1.1507449999999722,
+     "peak_pss_bytes": 167706624
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.05601641499993093,
+     "counts": {
+      "source_bytes": 8391085,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "16cae0a2716e40658d719a663b5d5fce25dfde7e9ebfec26d5d8f2850ad58cbd",
+     "process_s": 1.1583082559999411,
+     "cpu_s": 1.1509790000000066,
+     "peak_pss_bytes": 167630848
+    }
+   ]
+  },
+  {
+   "name": "texture-ATC_RGBA8",
+   "impl": "unitypy",
+   "category": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "17",
+    "item": "`ATC_RGBA8`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.05632226800003082,
+     "counts": {
+      "source_bytes": 8391084,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "cb1e101057c7f04bb6bb197d37c967872e6025500d0bbea4cf14869550f85270",
+     "process_s": 0.9107487539999966,
+     "cpu_s": 1.1910369999999944,
+     "peak_pss_bytes": 165512192
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.060502035000013166,
+     "counts": {
+      "source_bytes": 8391084,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "cb1e101057c7f04bb6bb197d37c967872e6025500d0bbea4cf14869550f85270",
+     "process_s": 0.9294441499999948,
+     "cpu_s": 1.2058799999999792,
+     "peak_pss_bytes": 161306624
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.056094596000036745,
+     "counts": {
+      "source_bytes": 8391084,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "cb1e101057c7f04bb6bb197d37c967872e6025500d0bbea4cf14869550f85270",
+     "process_s": 0.9067005229999836,
+     "cpu_s": 1.1862900000000138,
+     "peak_pss_bytes": 161373184
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.056508400999973674,
+     "counts": {
+      "source_bytes": 8391084,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "cb1e101057c7f04bb6bb197d37c967872e6025500d0bbea4cf14869550f85270",
+     "process_s": 0.9066117099999929,
+     "cpu_s": 1.1865229999999656,
+     "peak_pss_bytes": 165512192
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.05720053799996094,
+     "counts": {
+      "source_bytes": 8391084,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "cb1e101057c7f04bb6bb197d37c967872e6025500d0bbea4cf14869550f85270",
+     "process_s": 0.9410176010000555,
+     "cpu_s": 1.2162020000000098,
+     "peak_pss_bytes": 157082624
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.06007218100000955,
+     "counts": {
+      "source_bytes": 8391084,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "cb1e101057c7f04bb6bb197d37c967872e6025500d0bbea4cf14869550f85270",
+     "process_s": 0.9253245639999932,
+     "cpu_s": 1.2033739999999966,
+     "peak_pss_bytes": 161262592
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.05796659299994644,
+     "counts": {
+      "source_bytes": 8391084,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "cb1e101057c7f04bb6bb197d37c967872e6025500d0bbea4cf14869550f85270",
+     "process_s": 0.9500392300000158,
+     "cpu_s": 1.2342070000000263,
+     "peak_pss_bytes": 155807744
+    }
+   ]
+  },
+  {
+   "name": "texture-ATC_RGBA8",
+   "impl": "unityrs",
+   "category": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "17",
+    "item": "`ATC_RGBA8`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.05230369899999232,
+     "counts": {
+      "source_bytes": 8391084,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "cb1e101057c7f04bb6bb197d37c967872e6025500d0bbea4cf14869550f85270",
+     "process_s": 1.131959338999991,
+     "cpu_s": 1.1240300000000047,
+     "peak_pss_bytes": 146672640
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.0521900719999735,
+     "counts": {
+      "source_bytes": 8391084,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "cb1e101057c7f04bb6bb197d37c967872e6025500d0bbea4cf14869550f85270",
+     "process_s": 1.1437399099999652,
+     "cpu_s": 1.1339660000000436,
+     "peak_pss_bytes": 167646208
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.0518461589999788,
+     "counts": {
+      "source_bytes": 8391084,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "cb1e101057c7f04bb6bb197d37c967872e6025500d0bbea4cf14869550f85270",
+     "process_s": 1.11763731100001,
+     "cpu_s": 1.1114809999999977,
+     "peak_pss_bytes": 148396032
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.05234140200002457,
+     "counts": {
+      "source_bytes": 8391084,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "cb1e101057c7f04bb6bb197d37c967872e6025500d0bbea4cf14869550f85270",
+     "process_s": 1.1422014490000265,
+     "cpu_s": 1.1346110000000635,
+     "peak_pss_bytes": 151080960
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.05269451300000583,
+     "counts": {
+      "source_bytes": 8391084,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "cb1e101057c7f04bb6bb197d37c967872e6025500d0bbea4cf14869550f85270",
+     "process_s": 1.1619889899999976,
+     "cpu_s": 1.1559009999999716,
+     "peak_pss_bytes": 167633920
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.05218783500004065,
+     "counts": {
+      "source_bytes": 8391084,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "cb1e101057c7f04bb6bb197d37c967872e6025500d0bbea4cf14869550f85270",
+     "process_s": 1.1451156420000643,
+     "cpu_s": 1.1382150000000024,
+     "peak_pss_bytes": 167658496
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.053301876999967135,
+     "counts": {
+      "source_bytes": 8391084,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "cb1e101057c7f04bb6bb197d37c967872e6025500d0bbea4cf14869550f85270",
+     "process_s": 1.1683154439999726,
+     "cpu_s": 1.1597489999999766,
+     "peak_pss_bytes": 167674880
+    }
+   ]
+  },
+  {
+   "name": "texture-ASTC_RGBA_4x4",
+   "impl": "unitypy",
+   "category": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "17",
+    "item": "`ASTC_RGBA_4x4`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.16220048399998177,
+     "counts": {
+      "source_bytes": 8391092,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "035a7b1b3e9265eb67c53d34ea82cb1209eb114860c6be570aaf3a66b5c02698",
+     "process_s": 1.0230581210000196,
+     "cpu_s": 1.3037190000000152,
+     "peak_pss_bytes": 169420800
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.16147074700000985,
+     "counts": {
+      "source_bytes": 8391092,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "035a7b1b3e9265eb67c53d34ea82cb1209eb114860c6be570aaf3a66b5c02698",
+     "process_s": 1.02555959700004,
+     "cpu_s": 1.305233999999956,
+     "peak_pss_bytes": 169458688
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.1607497379999927,
+     "counts": {
+      "source_bytes": 8391092,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "035a7b1b3e9265eb67c53d34ea82cb1209eb114860c6be570aaf3a66b5c02698",
+     "process_s": 1.0211979409999685,
+     "cpu_s": 1.3037680000000194,
+     "peak_pss_bytes": 169417728
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.16137972000001355,
+     "counts": {
+      "source_bytes": 8391092,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "035a7b1b3e9265eb67c53d34ea82cb1209eb114860c6be570aaf3a66b5c02698",
+     "process_s": 1.0261940869999648,
+     "cpu_s": 1.3061390000000301,
+     "peak_pss_bytes": 169465856
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.1597659349999958,
+     "counts": {
+      "source_bytes": 8391092,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "035a7b1b3e9265eb67c53d34ea82cb1209eb114860c6be570aaf3a66b5c02698",
+     "process_s": 1.0371748649999972,
+     "cpu_s": 1.3176039999999603,
+     "peak_pss_bytes": 165236736
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.16006601100002626,
+     "counts": {
+      "source_bytes": 8391092,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "035a7b1b3e9265eb67c53d34ea82cb1209eb114860c6be570aaf3a66b5c02698",
+     "process_s": 1.0333827509999765,
+     "cpu_s": 1.3140429999999697,
+     "peak_pss_bytes": 169409536
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.15827961499996945,
+     "counts": {
+      "source_bytes": 8391092,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "035a7b1b3e9265eb67c53d34ea82cb1209eb114860c6be570aaf3a66b5c02698",
+     "process_s": 1.036487182999963,
+     "cpu_s": 1.3234510000000341,
+     "peak_pss_bytes": 165238784
+    }
+   ]
+  },
+  {
+   "name": "texture-ASTC_RGBA_4x4",
+   "impl": "unityrs",
+   "category": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "17",
+    "item": "`ASTC_RGBA_4x4`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.13782539800001814,
+     "counts": {
+      "source_bytes": 8391092,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "035a7b1b3e9265eb67c53d34ea82cb1209eb114860c6be570aaf3a66b5c02698",
+     "process_s": 1.222855141000025,
+     "cpu_s": 1.21396399999999,
+     "peak_pss_bytes": 163559424
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.13736140499997873,
+     "counts": {
+      "source_bytes": 8391092,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "035a7b1b3e9265eb67c53d34ea82cb1209eb114860c6be570aaf3a66b5c02698",
+     "process_s": 1.2193131470000367,
+     "cpu_s": 1.2127680000000396,
+     "peak_pss_bytes": 163586048
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.13768950399997948,
+     "counts": {
+      "source_bytes": 8391092,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "035a7b1b3e9265eb67c53d34ea82cb1209eb114860c6be570aaf3a66b5c02698",
+     "process_s": 1.2260693549999928,
+     "cpu_s": 1.2193639999999846,
+     "peak_pss_bytes": 163621888
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.1386409639999897,
+     "counts": {
+      "source_bytes": 8391092,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "035a7b1b3e9265eb67c53d34ea82cb1209eb114860c6be570aaf3a66b5c02698",
+     "process_s": 1.2226427899999521,
+     "cpu_s": 1.2154639999999404,
+     "peak_pss_bytes": 163561472
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.13725041999998666,
+     "counts": {
+      "source_bytes": 8391092,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "035a7b1b3e9265eb67c53d34ea82cb1209eb114860c6be570aaf3a66b5c02698",
+     "process_s": 1.2404175359999954,
+     "cpu_s": 1.2310830000000692,
+     "peak_pss_bytes": 163596288
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.1367476830000669,
+     "counts": {
+      "source_bytes": 8391092,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "035a7b1b3e9265eb67c53d34ea82cb1209eb114860c6be570aaf3a66b5c02698",
+     "process_s": 1.2192987909999147,
+     "cpu_s": 1.2114520000000653,
+     "peak_pss_bytes": 163665920
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.13871000400001776,
+     "counts": {
+      "source_bytes": 8391092,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "035a7b1b3e9265eb67c53d34ea82cb1209eb114860c6be570aaf3a66b5c02698",
+     "process_s": 1.2637480700000197,
+     "cpu_s": 1.2551920000000223,
+     "peak_pss_bytes": 159391744
+    }
+   ]
+  },
+  {
+   "name": "texture-ASTC_RGBA_8x8",
+   "impl": "unitypy",
+   "category": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "17",
+    "item": "`ASTC_RGBA_8x8`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.12221032000002197,
+     "counts": {
+      "source_bytes": 2099634,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "f1ce4d293134cffc27fabfc6857fc698699a53502dd3336e37fac77ce9aea68a",
+     "process_s": 0.9657417330000158,
+     "cpu_s": 1.2477509999999938,
+     "peak_pss_bytes": 153742336
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.11879393499998514,
+     "counts": {
+      "source_bytes": 2099634,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "f1ce4d293134cffc27fabfc6857fc698699a53502dd3336e37fac77ce9aea68a",
+     "process_s": 0.9515642069999899,
+     "cpu_s": 1.2345969999999795,
+     "peak_pss_bytes": 153754624
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.12001938600002404,
+     "counts": {
+      "source_bytes": 2099634,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "f1ce4d293134cffc27fabfc6857fc698699a53502dd3336e37fac77ce9aea68a",
+     "process_s": 0.9542539529999772,
+     "cpu_s": 1.2345219999999983,
+     "peak_pss_bytes": 153735168
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.11814818199997035,
+     "counts": {
+      "source_bytes": 2099634,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "f1ce4d293134cffc27fabfc6857fc698699a53502dd3336e37fac77ce9aea68a",
+     "process_s": 0.9599112950000404,
+     "cpu_s": 1.238788999999997,
+     "peak_pss_bytes": 153677824
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.12219146600000386,
+     "counts": {
+      "source_bytes": 2099634,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "f1ce4d293134cffc27fabfc6857fc698699a53502dd3336e37fac77ce9aea68a",
+     "process_s": 0.9776838709999538,
+     "cpu_s": 1.259505000000047,
+     "peak_pss_bytes": 153725952
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.12305624199996146,
+     "counts": {
+      "source_bytes": 2099634,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "f1ce4d293134cffc27fabfc6857fc698699a53502dd3336e37fac77ce9aea68a",
+     "process_s": 0.9751395499999944,
+     "cpu_s": 1.2498879999999986,
+     "peak_pss_bytes": 153728000
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.12188359300000684,
+     "counts": {
+      "source_bytes": 2099634,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "f1ce4d293134cffc27fabfc6857fc698699a53502dd3336e37fac77ce9aea68a",
+     "process_s": 0.9971735230000149,
+     "cpu_s": 1.2789510000000064,
+     "peak_pss_bytes": 149516288
+    }
+   ]
+  },
+  {
+   "name": "texture-ASTC_RGBA_8x8",
+   "impl": "unityrs",
+   "category": "texture",
+   "timer": "obj.read().image.tobytes() for each Texture2D",
+   "paired": true,
+   "reason": null,
+   "parity_row": {
+    "section": "17",
+    "item": "`ASTC_RGBA_8x8`"
+   },
+   "tier": "A",
+   "runs": [
+    {
+     "round": 0,
+     "status": "ok",
+     "scope_s": 0.10332312799999954,
+     "counts": {
+      "source_bytes": 2099634,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "f1ce4d293134cffc27fabfc6857fc698699a53502dd3336e37fac77ce9aea68a",
+     "process_s": 1.1699952220000114,
+     "cpu_s": 1.1632959999999883,
+     "peak_pss_bytes": 151038976
+    },
+    {
+     "round": 1,
+     "status": "ok",
+     "scope_s": 0.10336316199999374,
+     "counts": {
+      "source_bytes": 2099634,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "f1ce4d293134cffc27fabfc6857fc698699a53502dd3336e37fac77ce9aea68a",
+     "process_s": 1.173350203000041,
+     "cpu_s": 1.167459000000008,
+     "peak_pss_bytes": 146828288
+    },
+    {
+     "round": 2,
+     "status": "ok",
+     "scope_s": 0.10401385900001969,
+     "counts": {
+      "source_bytes": 2099634,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "f1ce4d293134cffc27fabfc6857fc698699a53502dd3336e37fac77ce9aea68a",
+     "process_s": 1.176536547000012,
+     "cpu_s": 1.1691319999999905,
+     "peak_pss_bytes": 146776064
+    },
+    {
+     "round": 3,
+     "status": "ok",
+     "scope_s": 0.1042064929999924,
+     "counts": {
+      "source_bytes": 2099634,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "f1ce4d293134cffc27fabfc6857fc698699a53502dd3336e37fac77ce9aea68a",
+     "process_s": 1.1812484479999625,
+     "cpu_s": 1.17488400000002,
+     "peak_pss_bytes": 146817024
+    },
+    {
+     "round": 4,
+     "status": "ok",
+     "scope_s": 0.10578014099996835,
+     "counts": {
+      "source_bytes": 2099634,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "f1ce4d293134cffc27fabfc6857fc698699a53502dd3336e37fac77ce9aea68a",
+     "process_s": 1.1981929029999492,
+     "cpu_s": 1.1920859999999607,
+     "peak_pss_bytes": 142625792
+    },
+    {
+     "round": 5,
+     "status": "ok",
+     "scope_s": 0.10360171500008164,
+     "counts": {
+      "source_bytes": 2099634,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "f1ce4d293134cffc27fabfc6857fc698699a53502dd3336e37fac77ce9aea68a",
+     "process_s": 1.1825607929999933,
+     "cpu_s": 1.1757539999999267,
+     "peak_pss_bytes": 146780160
+    },
+    {
+     "round": 6,
+     "status": "ok",
+     "scope_s": 0.10736221300010129,
+     "counts": {
+      "source_bytes": 2099634,
+      "textures": 8,
+      "pixels": 8388608
+     },
+     "digest": "f1ce4d293134cffc27fabfc6857fc698699a53502dd3336e37fac77ce9aea68a",
+     "process_s": 1.2163385940000353,
+     "cpu_s": 1.2098799999999414,
+     "peak_pss_bytes": 142528512
+    }
+   ]
+  }
+ ]
+}
