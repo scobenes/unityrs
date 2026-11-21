@@ -155,11 +155,12 @@ class RuleTests(unittest.TestCase):
 
     def test_witness_rows_are_named(self):
         limb_found, _, _, _ = self.run_rule((("t0", ("compact",)),))
-        for case, sample, side, group, found in limb_found.values():
+        for case, sample, side, group, found, bone in limb_found.values():
             self.assertEqual((case, group), ("body-twist-compact-t0", "exploration all-equal core"))
             self.assertIn(sample, (1, 2))
             self.assertIn(side, ("Left", "Right"))
             self.assertGreater(found, 0)
+            self.assertIn(bone, witness.LIMB_ONLY[side])
 
     def test_a_component_witness_needs_both_joint_candidates_to_predict(self):
         # A pole on a row refuses that candidate's whole side: a limb witness found there with F1 cannot credit a

@@ -3,7 +3,7 @@ transition and claim, both keyed to the intake digest, and the evaluation of B5a
 round 12's allowlist.
 
     python3 -I tools/parity/anim_twist_seal.py freeze --intake-digest SHA --candidate none --reason TEXT
-        --observe-b5a MODULE:FUNCTION [--twist-rule MODULE:FUNCTION] --reader-out PATH
+        --observe-b5a MODULE:FUNCTION [--twist-rule MODULE:FUNCTION] --reader-out PATH --image sha256:ID
 
 builds the unityrs executable from the pinned commit (READER_BUILD), writes it to PATH and FREEZE_PATH once (an
 exclusive create), to be committed on its own after the code it pins.
@@ -21,7 +21,8 @@ from the pinned commit's tree (`build_reader`, READER_BUILD, recorded), its sha2
 evaluation's hooks, `module:function` in a pinned module (B5a's observer; the twist rule, only when not `none`),
 recorded by path and sha256 and never executed at the freeze; the evaluation loads each from the exact pinned bytes
 (`load_hook`), the twist rule only after B5a's verdict is written, and takes no other callable. It names the chosen
-candidate (an anim_twist_model limb and foot), or `none` with its reason. It records B5a's pinned refusal reasons
+candidate (an anim_twist_model limb and foot), or `none` with its reason. It records the interpreter it ran under
+(`interpreter`: CPython's exact version and the container image's id). It records B5a's pinned refusal reasons
 and the digest of its expected rows, recomputed and compared at evaluation.
 
 **Binding** (`bind`): FREEZE_PATH itself (no symlink at it or above it in this checkout), tracked, added by exactly
@@ -105,6 +106,16 @@ def sha256(data):
 def digest_of(value):
     replay.require(isinstance(value, str) and DIGEST.fullmatch(value), "an intake digest is 64 lowercase hex")
     return value
+
+
+def interpreter(image):
+    """The interpreter a fit or freeze ran under: CPython's exact version (its float `sum` changed in 3.12) and the
+    container image's id (`docker inspect --format '{{.Image}}'`, from outside: the container cannot see it)."""
+    import platform
+
+    replay.require(isinstance(image, str) and image.startswith("sha256:") and DIGEST.fullmatch(image[7:]),
+                   "the container image is its id, sha256: and 64 lowercase hex")
+    return dict(implementation=platform.python_implementation(), python=platform.python_version(), image=image)
 
 
 def hook_modules(hooks):
@@ -197,10 +208,11 @@ def b5a_pins():
                 refused=sha256(round12.canonical_json(sorted(map(list, refused), key=str))))
 
 
-def make_freeze(intake_digest, candidate, hooks, reader_out, reason=None, top=TOP):
+def make_freeze(intake_digest, candidate, hooks, reader_out, reason=None, top=TOP, image=None):
     """The freeze record: its code, its hooks (each named in a pinned module, recorded by path and sha256 with the
-    code, never executed here: they run only at evaluation, the twist rule after B5a), and the reader built from
-    the pinned commit into `reader_out`. A `none` freeze names no twist rule."""
+    code, never executed here: they run only at evaluation, the twist rule after B5a), the reader built from
+    the pinned commit into `reader_out`, and the interpreter it ran under (`interpreter`, `image` the container's).
+    A `none` freeze names no twist rule."""
     from anim_muscle_confirm import EDITORS
 
     digest_of(intake_digest)
@@ -211,8 +223,9 @@ def make_freeze(intake_digest, candidate, hooks, reader_out, reason=None, top=TO
     replay.require(hooks["observe_b5a"] is not None and (hooks["twist_rule"] is not None) == (candidate != "none"),
                    "the freeze names B5a's observer, and the twist rule unless `none`, and only then")
     code = code_state(hooks, top)
+    running = interpreter(image)
     record = dict(format=FORMAT, version=1, intake_digest=intake_digest, candidate=candidate, reason=reason,
-                  hooks=hooks, code=code, reader=build_reader(code["commit"], reader_out, top),
+                  hooks=hooks, code=code, interpreter=running, reader=build_reader(code["commit"], reader_out, top),
                   editors=sorted(EDITORS), verdict=VERDICT, b5a=b5a_pins())
     for name in HOOKS:
         if hooks[name] is not None:
@@ -236,7 +249,13 @@ def read_freeze(data):
     record = replay.read_json(data.decode("utf-8"))
     replay.require(isinstance(record, dict) and record.get("format") == FORMAT and record.get("version") == 1
                    and set(record) == {"format", "version", "intake_digest", "candidate", "reason", "hooks", "code",
-                                       "reader", "editors", "verdict", "b5a"}, f"expected {FORMAT} version 1")
+                                       "interpreter", "reader", "editors", "verdict", "b5a"},
+                   f"expected {FORMAT} version 1")
+    running = record["interpreter"]
+    replay.require(isinstance(running, dict) and set(running) == {"implementation", "python", "image"}
+                   and interpreter(running["image"])["image"] == running["image"]
+                   and all(isinstance(running[k], str) and running[k] for k in ("implementation", "python")),
+                   "the freeze's interpreter is not a CPython version and a container image")
     replay.require(candidate_of(record["candidate"]) == record["candidate"]
                    and (record["candidate"] == "none") == (record["reason"] in REASONS),
                    "the freeze's candidate or reason is not a frozen one")
@@ -581,11 +600,13 @@ def main():
     freeze.add_argument("--observe-b5a", required=True)
     freeze.add_argument("--twist-rule")
     freeze.add_argument("--reader-out", type=Path, required=True)
+    freeze.add_argument("--image", required=True, help="the container image's id, sha256:...")
     args = parser.parse_args()
     try:
         candidate = args.candidate if args.candidate == "none" else replay.read_json(args.candidate)
         hooks = dict(observe_b5a=args.observe_b5a, twist_rule=args.twist_rule)
-        found = write_freeze(make_freeze(args.intake_digest, candidate, hooks, args.reader_out, args.reason))
+        found = write_freeze(make_freeze(args.intake_digest, candidate, hooks, args.reader_out, args.reason,
+                                         image=args.image))
         print(f"wrote {FREEZE_PATH.name} (sha256 {found}) and the reader: commit the freeze alone, after the code")
     except (ValueError, OSError) as exc:
         parser.exit(1, f"anim_twist_seal: {exc}\n")
