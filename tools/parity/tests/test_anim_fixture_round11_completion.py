@@ -40,10 +40,12 @@ class AvatarTests(unittest.TestCase):
 
 
 class PreviewTests(unittest.TestCase):
-    def resolved(self, listed, shown, table=(FULL,)):
+    def resolved(self, listed, shown, table=(FULL,), outcome=None):
         headers = {(1, -7): dict(HEADER, container_path=listed)}
-        r11.resolve_preview(headers, {"object": dict(HEADER, **shown)},
-                            lambda key: set(table) if key == (1, -7) else set())
+        found = r11.resolve_preview(headers, {"object": dict(HEADER, **shown)},
+                                    lambda key: set(table) if key == (1, -7) else set())
+        if outcome is not None:
+            self.assertIs(found, outcome)
         return headers[(1, -7)]["container_path"]
 
     def test_the_preview_is_the_clis_by_utf8_bytes(self):
@@ -56,8 +58,10 @@ class PreviewTests(unittest.TestCase):
         self.assertEqual(wide, {"$unityrs": "preview", "length": 148, "prefix": WIDE[:75], "omitted": 21})
 
     def test_a_shortened_path_resolves_to_the_bundles_own_path(self):
-        self.assertEqual(self.resolved(preview(FULL), dict(container_path=FULL)), FULL)
-        self.assertEqual(self.resolved(preview(WIDE), dict(container_path=WIDE), table=(WIDE,)), WIDE)
+        self.assertEqual(self.resolved(preview(FULL), dict(container_path=FULL), outcome=True), FULL)
+        self.assertEqual(self.resolved(preview(WIDE), dict(container_path=WIDE), table=(WIDE,), outcome=True), WIDE)
+        # A path inspect lists whole needs no resolution.
+        self.assertEqual(self.resolved("a.anim", dict(container_path="a.anim"), outcome=None), "a.anim")
 
     def test_anything_else_stays_and_refuses(self):
         for label, listed, shown, table in (
@@ -70,9 +74,10 @@ class PreviewTests(unittest.TestCase):
                 ("a wrong omitted count", preview(FULL, omitted=1), dict(container_path=FULL), (FULL,)),
                 ("a code point count", preview(WIDE, length=len(WIDE)), dict(container_path=WIDE), (WIDE,)),
                 ("another object", preview(FULL), dict(container_path=FULL, name="y"), (FULL,)),
-                ("a listed full path", "a.anim", dict(container_path="b.anim"), ("b.anim",))):
+                # A show document repeating inspect's preview is no full path: it never skips the table.
+                ("the preview repeated", preview(FULL), dict(container_path=preview(FULL)), (FULL,))):
             with self.subTest(label):
-                self.assertEqual(self.resolved(listed, shown, table), listed)
+                self.assertEqual(self.resolved(listed, shown, table, outcome=False), listed)
 
     def view(self, folder, shown):
         """The round 11 view of one saved bundle: an AnimationClip listed by its preview, and the AssetBundle whose
@@ -98,8 +103,10 @@ class PreviewTests(unittest.TestCase):
         with r11.round11_tables(), scratch.folder() as folder:
             self.assertTrue(issubclass(complete.BundleView, base) and complete.BundleView is not base)
             self.assertEqual(self.view(folder, FULL).value((1, -7)), {"m_Name": "x"})
-            with self.assertRaisesRegex(ValueError, r"show identity disagrees with inspect: \(1, -7\)"):
-                self.view(folder, TWIN).value((1, -7))
+            for shown in (TWIN, preview(FULL)):
+                with self.subTest(shown=shown), self.assertRaisesRegex(
+                        ValueError, "show path is not the bundle's container path for a previewed object in b: -7"):
+                    self.view(folder, shown).value((1, -7))
         self.assertIs(complete.BundleView, base)
 
 
@@ -146,6 +153,38 @@ class ExpectedFailureTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "body-probes-muscles-tall: expected failure without its bundle "
                                                 "body-muscles-tall"):
             self.inventory([self.row(name) for name in SWEEPS], bundles=SWEEPS[:1])
+
+    def test_each_accepted_sweeps_bundle_opens_and_lists_its_prefab(self):
+        opened = []
+
+        class View:
+            def __init__(self, path, entries):
+                self.path, self.entries = path, entries
+
+            def asset(self, name, class_id):
+                replay.require(name in self.entries and class_id == 1, f"expected one AssetBundle container entry "
+                                                                         f"for {name} in {self.path.name}")
+                opened.append((self.path.name, name))
+
+        with scratch.folder() as folder:
+            cases = [self.row(name) for name in SWEEPS] + [self.row("body-probes-fingers", status="recorded", reason="")]
+            (folder / "run.json").write_text(json.dumps(dict(format="unityrs.fixture_run", version=1, run=RUN,
+                                                             cases=cases)), encoding="utf-8")
+            prefabs = {f"assets/unityrsfixtures/{r11.ROUND11_CASES[n].folder}/identity.prefab" for n in SWEEPS}
+            r11.check_accepted_bundles(folder, replay, lambda path: View(path, prefabs))
+            self.assertEqual(opened, [("body-muscles-compact", "assets/unityrsfixtures/body-muscles-compact/"
+                                                               "identity.prefab"),
+                                      ("body-muscles-tall", "assets/unityrsfixtures/body-muscles-tall/identity.prefab")])
+            # A stale bundle without the sweep's prefab fails.
+            with self.assertRaisesRegex(ValueError, "expected one AssetBundle container entry"):
+                r11.check_accepted_bundles(folder, replay, lambda path: View(path, set()))
+            # A placeholder is no bundle: BundleView refuses it before any inspection.
+            (folder / "bundles").mkdir()
+            placeholder = folder / "bundles" / "body-muscles-compact"
+            placeholder.write_bytes(b"placeholder")
+            with self.assertRaisesRegex(ValueError, "invalid UnityFS signature: body-muscles-compact"):
+                r11.check_accepted_bundles(folder, replay, lambda path: complete.BundleView(
+                    path, "d", 0, "unityrs", None, replay, RUN))
 
     def test_completion_lists_them_as_not_covered(self):
         with scratch.folder() as folder:

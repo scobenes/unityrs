@@ -485,19 +485,24 @@ def resolve_preview(headers, doc, listed):
     """A `show` document's full container path in place of the preview `inspect` lists for a long one, so
     completion compares the object's whole identity. Only where the bundle's own container table lists exactly
     that path for the object (`listed(key)`, a read apart from show's object header), the listed preview is that
-    path's (`preview_of`), and every other field is the same. Anything else stays as listed, and the identity
-    check refuses it."""
+    path's (`preview_of`), and every other field is the same. Returns None where `inspect` lists no preview, True
+    once resolved, and False for anything else, a `show` path that repeats the preview included: the caller
+    refuses it."""
     obj = doc.get("object") if isinstance(doc, dict) else None
     if not isinstance(obj, dict):
-        return
+        return None
     key = (obj.get("file_index"), obj.get("path_id"))
     head = headers.get(key)
     preview, full = (head or {}).get("container_path"), obj.get("container_path")
-    if (isinstance(preview, dict) and isinstance(full, str) and preview == preview_of(full)
+    if not isinstance(preview, dict):
+        return None
+    if (isinstance(full, str) and preview == preview_of(full)
             and {k: v for k, v in head.items() if k != "container_path"}
             == {k: v for k, v in obj.items() if k != "container_path"}
             and listed(key) == {full}):
         head["container_path"] = full
+        return True
+    return False
 
 
 @contextmanager
@@ -517,7 +522,9 @@ def round11_tables():
         def document(self, mode, options, name):
             doc = super().document(mode, options, name)
             if mode == "show":
-                resolve_preview(self.headers, doc, self.container_paths)
+                self.require(resolve_preview(self.headers, doc, self.container_paths) is not False,
+                             f"show path is not the bundle's container path for a previewed object in "
+                             f"{self.path.name}: {(doc.get('object') or {}).get('path_id')}")
             return doc
 
         def container_paths(self, key):
@@ -579,12 +586,28 @@ def check_inventory(folder, replay):
     replay.require(not unrecorded, f"round 11 body cases not recorded ({len(unrecorded)}): " + ", ".join(unrecorded))
 
 
+def check_accepted_bundles(folder, replay, open_view):
+    """Each expected failure's bundle opens as a bundle of this run (`open_view`, anim_replay_complete.BundleView:
+    its UnityFS signature, its inspection, its Editor version and run stamp) and lists the sweep's prefab, so a
+    placeholder or a stale file fails."""
+    manifest = replay.read_json((folder / "run.json").read_text(encoding="utf-8"))
+    for row in manifest["cases"]:
+        if accepted_failure(row):
+            fixture = ROUND11_CASES[row["name"]]
+            view = open_view(folder / "bundles" / fixture.bundle)
+            view.asset(f"assets/unityrsfixtures/{fixture.folder}/{fixture.prefab}.prefab", 1)
+
+
 def complete_round(folder, unityrs, inspect_dir, replay):
-    """Complete a round 11 run: its inventory, then every check `complete` runs, with round 11's tables."""
+    """Complete a round 11 run: its inventory and its expected failures' bundles, then every check `complete`
+    runs, with round 11's tables."""
     import anim_replay_complete as complete
 
     check_inventory(folder, replay)
+    run = complete.read_manifest(folder, replay)[1]
     with round11_tables():
+        check_accepted_bundles(folder, replay, lambda path: complete.BundleView(
+            path, complete.bundle_digest(path), 0, unityrs, inspect_dir, replay, run))
         return complete.complete_folder(folder, unityrs, inspect_dir, replay)
 
 
