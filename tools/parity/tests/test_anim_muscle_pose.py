@@ -303,14 +303,14 @@ class AgreementTests(unittest.TestCase):
 
 class FailureTests(unittest.TestCase):
     """`agree`'s exit status, acceptance alone: it fails unless both Editors compare acceptance samples, every
-    one within its bound, and the acceptance runs lack no required case. Round 11 is `confirm`'s
-    (test_anim_muscle_round11.ConfirmTests)."""
+    one within its bound, and the acceptance runs lack no required case. Round 11 is anim_muscle_confirm's
+    (test_anim_muscle_confirm)."""
 
     def document(self, **changes):
         cases = AgreementTests.case
         entries = [cases(self, editor=editor)["entries"][0] for editor in pose.EDITORS]
         document = dict(format=pose.FORMAT, kind="cases", reference=pose.REFERENCE, entries=entries,
-                        missing={editor: [] for editor in pose.EDITORS}, round11={})
+                        missing={editor: [] for editor in pose.EDITORS})
         return document | changes
 
     def test_a_complete_agreeing_document_passes(self):
@@ -379,13 +379,13 @@ class FailureTests(unittest.TestCase):
         self.assertEqual(self.agree(document)[0], 1)
 
     def test_a_document_without_its_inventory_is_refused(self):
-        for key in ("round11", "missing"):
-            document = self.document()
-            del document[key]
-            for mode in ("agree", "confirm"):
-                code, message = self.agree(document, mode)
-                self.assertEqual(code, 1)
-                self.assertIn("make it again", message)
+        document = self.document()
+        del document["missing"]
+        code, message = self.agree(document)
+        self.assertEqual(code, 1)
+        self.assertIn("make it again", message)
+        # confirm is no mode of the case file's.
+        self.assertEqual(self.agree(self.document(), "confirm")[0], 2)
 
     def agree(self, document, mode="agree"):
         """`agree`'s (or `mode`'s) exit status and stderr on `document`."""

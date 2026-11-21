@@ -1,20 +1,14 @@
-"""B5a's round 11 inventory: the cases its confirmation requires of each Editor's round 11 run.
+"""B5a's round 11 inventory: the cases its confirmation requires of each Editor's round 11 run, and the reader
+of their recordings.
 
-docs/plans/humanoid-body.md, B5a (e), froze them before any round 11 data: all four muscle sweeps
-and every full-body clip, in both Editors. Freeze v8's `anim_body_runs.Run` lists neither and is
-not edited; `Recordings` reads them beside it, from the same run folder.
-
-The names are round 11's builder's (UnityrsBodyMuscles.cs and UnityrsBodyClips.cs), as round 11's
-case table (`anim_fixture_round11.ROUND11_CASES`) lists them: 4 sweeps, 25 refusal-evidence and 318
-in-scope full-body clips. A run declares round 11 in `round.json`. Each run's required cases are
-this inventory together with any full-body clip its `run.json` lists, so neither the inventory
-nor the run can drop one unseen. Each must be recorded, its capture's own metadata naming its
-case, run, Editor version and bundle, and compared in full (`expected_samples`);
-`anim_muscle_pose.py confirm` fails otherwise. No round 11 rig is a hold-out rig. Only an
-in-scope sample confirms a required case: one the runtime refuses as `unsupported_humanoid_twist`
-(a non-neutral twist setting and a case animating a bone it redistributes over) is refusal
-evidence (`anim_muscle_pose.refusal_reason`, the plan's B5a (g)), and every round 11 rig's twist
-settings are neutral.
+docs/plans/humanoid-body.md, B5a (e), froze them before any round 11 data: all four muscle sweeps and every
+full-body clip, in both Editors. They are round 11's builder's, read from its tables
+(anim_muscle_confirm.b5a_cases, anim_fixture_round11.ROUND11_CASES' bundles), never copied: 4 sweeps, 25
+refusal-evidence and 318 in-scope full-body clips. Freeze v8's `anim_body_runs.Run` lists neither and is not
+edited; `Recordings` reads them beside it, from the same run folder. A run declares round 11 in `round.json`.
+Each run's required cases are this inventory together with any full-body clip its `run.json` lists, so neither
+can drop one unseen. Each capture's own metadata names its case, run, Editor version and bundle.
+anim_muscle_confirm.py judges them. No round 11 rig is a hold-out rig.
 """
 
 import sys
@@ -23,56 +17,20 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import anim_replay as replay  # noqa: E402
-from anim_fixture_body import CHAIN_VARIANT, CLIP_VARIANTS  # noqa: E402
 
 ROUND = 11
-# sweep: bundle
-SWEEPS = {name: name.replace("probes-", "") for name in (
-    "body-probes-muscles-compact", "body-probes-muscles-tall", "body-probes-fingers", "body-probes-face")}
-FULL_VARIANTS = ("keep-o0-y0-xz0", "bake-o1-y1-xz1", "level", "keep-o1-y1-xz1-motion")
-# The variants B4 admits, freeze v8's E4 passing set.
-ADMITTED = ("bake-o0-y0-xz1", "bake-o0-y1-xz0", "bake-o0-y1-xz1", "bake-o1-y0-xz0", "bake-o1-y0-xz1",
-            "bake-o1-y1-xz0", "bake-o1-y1-xz1", "keep-o0-y0-xz0", "keep-o1-y1-xz1-motion", "level",
-            "orientation-offset")
-TOPOLOGIES = ("no-upper-chest", "no-shoulders", "no-left-toes", "no-right-toes", "no-toes", "no-upper-chest-toes",
-              "no-upper-chest-left-toes", "no-upper-chest-right-toes", "noncoplanar")
-CHAIN_FEATURES = ("armature", "scaled-animator", "hips-scale")
-# The face configurations B3 admits besides both eyes and the jaw, on the compact and tall rigs.
-FACES = ("no-face", "eyes", "jaw")
-FACE_VARIANTS = ("keep-o0-y0-xz0", "bake-o1-y1-xz1")
-# rig: (variants, both placements). A plain chain plays on both roots; an F5 feature's on the identity root.
-FULL_CLIP_RIGS = {
-    **{rig + "-full": (FULL_VARIANTS, True) for rig in ("compact", "large", "small")},
-    "armature-large-full": ((CHAIN_VARIANT,), False),
-    **{rig + "-scoped": (ADMITTED, True) for rig in ("compact", "large", "small", "tall", *TOPOLOGIES)},
-    **{f"{rig}-{face}-scoped": (FACE_VARIANTS, True) for rig in ("compact", "tall") for face in FACES},
-    **{f"{feature}{size}-scoped": ((CHAIN_VARIANT,), False)
-       for feature in CHAIN_FEATURES for size in ("", "-large", "-small") if (feature, size) != ("armature", "-small")}}
 
 
-def _full_clips():
-    clips = {}
-    for rig, (chosen, both) in FULL_CLIP_RIGS.items():
-        for variant in (name for name in CLIP_VARIANTS if name in chosen):
-            for suffix in ("", "-offset") if both else ("",):
-                clips[f"body-clip-{rig}-{variant}{suffix}"] = "body-clips-" + rig
-    return clips
+def _cases():
+    import anim_fixture_round11 as r11
+    from anim_muscle_confirm import b5a_cases
+
+    return {case: r11.ROUND11_CASES[case].bundle for case in b5a_cases()}
 
 
-FULL_CLIPS = _full_clips()
 # case: bundle
-CASES = SWEEPS | FULL_CLIPS
-# Each sweep's sample count: its known vectors (each muscle alone at ten values, then each bone's muscles jointly
-# twice) and the three spine anchors (round 11's anim_fixture_round11.probe_schedule).
-SWEEP_SAMPLES = {"body-probes-muscles-compact": 535, "body-probes-muscles-tall": 503, "body-probes-fingers": 423,
-                 "body-probes-face": 69}
-# A full-body clip's: its five key times and an off-key sample in each of its four intervals, as every F4 clip.
-CLIP_SAMPLES = 9
-
-
-def expected_samples(case):
-    """The samples a complete capture of a round 11 required case records."""
-    return SWEEP_SAMPLES.get(case, CLIP_SAMPLES)
+CASES = _cases()
+FULL_CLIPS = {case: bundle for case, bundle in CASES.items() if case.startswith("body-clip-")}
 
 
 def full_clip_bundle(name):

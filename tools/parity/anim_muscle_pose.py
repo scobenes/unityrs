@@ -33,19 +33,16 @@ or a zero or NaN quaternion, which a NaN or infinite muscle value gives (`tangen
         each with the curve's own f32 evaluation error), each with Unity's recorded local rotation and its
         derived bound, and the golden schedule on each distinct real axes record (generate them in the
         container, whose `tan` is CI's). A round 11 run adds its sweeps and full-body clips
-        (anim_muscle_round11) as confirmation entries. The file records each Editor's required cases and the
-        ones its runs lack. They stay private; `UNITYRS_MUSCLE_POSE_CASES=FILE cargo test` checks Rust
-        against them.
+        (anim_muscle_round11) as confirmation entries, for Rust's bit-for-bit check alone: confirmation
+        reads the run folders itself. The file records the required cases the acceptance runs lack. They stay
+        private; `UNITYRS_MUSCLE_POSE_CASES=FILE cargo test` checks Rust against them.
     python3 -I tools/parity/anim_muscle_pose.py agree FILE
         Acceptance (rounds 1 to 10): each bone's worst angle to Unity's recording against its bound, the
         Spine first, and the refusal cases apart; how many of its recorded rows reference 2 changes from
         reference 1. It exits non-zero (`failures`) on an Editor with no acceptance comparison, any
         acceptance sample outside its bound, a required case the runs lack, or a changed row on a bone
-        reference 1 agreed on. Round 11 never counts here.
-    python3 -I tools/parity/anim_muscle_pose.py confirm FILE
-        Confirmation (round 11) alone, never combined with acceptance: it exits non-zero
-        (`confirm_failures`) unless both Editors have a declared round 11 run, with the whole inventory,
-        each required case compared in full (its expected sample count), and every sample within its bound.
+        reference 1 agreed on. Round 11 never counts here: confirmation is anim_muscle_confirm.py's, from
+        the round 11 run folders, never from this file.
 
 **The agreement bound** (`unity_bound`) is derived, never fitted: Unity's own f32 error along the same path,
 each operation bounded at its actual operands as section 2.5 of docs/plans/humanoid-body.md derives E3a's,
@@ -314,16 +311,16 @@ def clip_values(doc, sample, names):
 def cases(unityrs, folders):
     """Real-Avatar cases from training runs: each bone's recorded samples, known vectors and clip playback alike,
     and the schedule on its axes. A round 11 run (`round.json`) adds its inventory (anim_muscle_round11: the
-    sweeps and full-body clips), and its entries are confirmation, never acceptance. `missing` records the
-    required cases the acceptance runs lack; `round11`, each Editor's declared round 11 runs, their required
-    cases and the ones they lack, for `confirm`."""
+    sweeps and full-body clips), and its entries are confirmation, never acceptance, kept for Rust's bit-for-bit
+    check (anim_muscle_confirm judges round 11 from the run folders). `missing` records the required cases the
+    acceptance runs lack."""
     import anim_body_runs as runs
     import anim_muscle_round11 as round11
     from anim_body_freeze import readers
     from anim_fixture_coverage import REFUSALS
 
     avatar_of, _ = readers(unityrs)
-    entries, generated, missing, rounds = [], {}, {}, {}
+    entries, generated, missing = [], {}, {}
     for folder in folders:
         run = runs.Run(folder, "training", pending=True)
         editor = run.version.split(".")[0]
@@ -334,10 +331,6 @@ def cases(unityrs, folders):
             extra = round11.Recordings(folder)
             replay.require(not documents.keys() & extra.documents.keys(), f"{folder.name}: a case is read twice")
             documents |= extra.documents
-            row = rounds.setdefault(editor, dict(runs=[], required=set(), missing=set()))
-            row["runs"].append(extra.run_id)
-            row["required"].update(extra.required)
-            row["missing"].update(extra.missing)
         for case, doc in sorted(documents.items()):
             human = runs.human_of(avatar_of(run, doc)) if doc["capture"]["samples"] else None
             found, axes = capture_entries(editor, case, doc, human, confirmation, REFUSALS)
@@ -348,10 +341,7 @@ def cases(unityrs, folders):
         entries.append(dict(editor=editor, case="generated", bone=bone, axes=axes_row(axes), rest=f32_hexes(rest),
                             vectors=[vector_row(rest, axes, values) for values in schedule(bone)]))
     return dict(format=FORMAT, kind="cases", reference=REFERENCE, muscle_axes=list(MUSCLE_AXES),
-                missing={editor: sorted(cases) for editor, cases in sorted(missing.items())},
-                round11={editor: dict(runs=sorted(row["runs"]), required=sorted(row["required"]),
-                                      missing=sorted(row["missing"])) for editor, row in sorted(rounds.items())},
-                entries=entries)
+                missing={editor: sorted(cases) for editor, cases in sorted(missing.items())}, entries=entries)
 
 
 def capture_entries(editor, case, doc, human, confirmation, refusals):
@@ -500,8 +490,8 @@ EDITORS = ("2022", "6000")
 def failures(document):
     """Why `agree` (acceptance, rounds 1 to 10) fails, empty when it passes: an Editor with no acceptance
     comparison; an acceptance sample outside its bound, on any bone (one reference 1 already failed included); a
-    required case the acceptance runs lack; a regression from reference 1. Round 11 never counts here: `confirm`
-    judges it, and the refusal table never counts."""
+    required case the acceptance runs lack; a regression from reference 1. Round 11 never counts here
+    (anim_muscle_confirm judges it), and the refusal table never counts."""
     found = []
     table = agreement(document)
     outside = [f"{editor} {name} in {rows[3]}" for (editor, name), rows in sorted(table.items()) if rows[3]]
@@ -518,45 +508,6 @@ def failures(document):
     return found
 
 
-def confirm_failures(document):
-    """Why `confirm` (round 11) fails, empty when it passes. It counts `confirmation` rows alone, never
-    acceptance's or the refusal table's, and needs, in both Editors: a declared round 11 run; its required cases,
-    the whole inventory (anim_muscle_round11.CASES) at least, none missing; every one compared in full, each of
-    its in-scope bone entries standing for the case's whole expected sample count (`expected_samples`); one
-    comparison or more; and every confirmation sample within its bound."""
-    import anim_muscle_round11 as round11
-
-    found = []
-    table = agreement(document, confirmation=True)
-    outside = [f"{editor} {name} in {rows[3]}" for (editor, name), rows in sorted(table.items()) if rows[3]]
-    if outside:
-        found.append("confirmation samples outside their bound: " + ", ".join(outside))
-    for editor in EDITORS:
-        run = document["round11"].get(editor, {})
-        if not run.get("runs"):
-            found.append(f"no declared round 11 run in Editor {editor}")
-        if not sum(rows[2] for (e, _), rows in table.items() if e == editor):
-            found.append(f"no confirmation comparison in Editor {editor}")
-        required = set(run.get("required", ()))
-        short = sorted(round11.CASES.keys() - required)
-        if run.get("runs") and short:
-            found.append(f"Editor {editor}'s round 11 inventory lacks {len(short)} case(s): " + ", ".join(short[:20]))
-        if run.get("missing"):
-            found.append(f"Editor {editor}'s round 11 runs lack {len(run['missing'])} required case(s): "
-                         + ", ".join(run["missing"][:20]))
-        counts = {}
-        for entry in document["entries"]:
-            if entry["editor"] == editor and entry.get("confirmation") is True and not entry.get("refusal", False):
-                counts.setdefault(entry["case"], []).append(
-                    sum(row.get("samples", 1) for row in entry["vectors"] if "recorded" in row))
-        partial = sorted(case for case in required
-                         if not counts.get(case) or set(counts[case]) != {round11.expected_samples(case)})
-        if partial:
-            found.append(f"Editor {editor} compares {len(partial)} required case(s) short of their full sample "
-                         "count: " + ", ".join(partial[:20]))
-    return found
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="mode", required=True)
@@ -566,8 +517,7 @@ def main():
     made.add_argument("--unityrs", required=True)
     made.add_argument("--out", type=Path, required=True)
     made.add_argument("folders", type=Path, nargs="+")
-    for mode in ("agree", "confirm"):
-        sub.add_parser(mode).add_argument("file", type=Path)
+    sub.add_parser("agree").add_argument("file", type=Path)
     args = parser.parse_args()
     try:
         if args.mode == "golden":
@@ -582,11 +532,10 @@ def main():
         else:
             document = replay.read_json(args.file.read_text(encoding="utf-8"))
             replay.require(document.get("reference") == REFERENCE, f"{args.file.name} is not reference {REFERENCE}'s")
-            replay.require("round11" in document and "missing" in document,
+            replay.require("missing" in document,
                            f"{args.file.name} records no required cases: make it again with `cases`")
-            judged = (("Acceptance (rounds 1 to 10)", agreement(document)) if args.mode == "agree" else
-                      ("Confirmation (round 11)", agreement(document, confirmation=True)))
-            for title, table in (judged, ("Refusal cases (never counted)", agreement(document, True))):
+            for title, table in (("Acceptance (rounds 1 to 10)", agreement(document)),
+                                 ("Refusal cases (never counted)", agreement(document, True))):
                 print(f"{title}:")
                 for (editor, name), (worst, bound, count, outside, changed, was) in sorted(
                         table.items(), key=lambda kv: (kv[0][1] != "Spine", kv[0][1], kv[0][0])):
@@ -594,7 +543,7 @@ def main():
                     print(f"{editor} {name:16s} worst {math.degrees(worst):.3e} deg  bound "
                           f"{math.degrees(bound):.3e} deg  {count} samples  {verdict}  ({changed} changed from "
                           f"reference 1, outside in {was})")
-            found = failures(document) if args.mode == "agree" else confirm_failures(document)
+            found = failures(document)
             replay.require(not found, "; ".join(found))
     except (ValueError, OSError) as exc:
         parser.exit(1, f"anim_muscle_pose: {exc}\n")
