@@ -102,8 +102,9 @@ pub(crate) struct ObjMode<'py> {
 
 /// A Python failure taken as raised, never empty.
 fn fetched(py: Python<'_>) -> PyErr {
-    PyErr::take(py)
-        .unwrap_or_else(|| pyo3::exceptions::PySystemError::new_err("a direct read's call failed"))
+    PyErr::take(py).unwrap_or_else(|| {
+        crate::errors::new::<pyo3::exceptions::PySystemError>("a direct read's call failed")
+    })
 }
 
 impl<'py> ObjMode<'py> {
@@ -416,7 +417,9 @@ impl<'py> ObjMode<'py> {
     ) -> PyResult<Bound<'py, PyAny>> {
         // SAFETY: a new empty tuple or null with an exception set.
         let empty = unsafe { Bound::from_owned_ptr_or_err(py, ffi::PyTuple_New(0)) }?;
-        let lost = || pyo3::exceptions::PySystemError::new_err("a direct read lost its value");
+        let lost = || {
+            crate::errors::new::<pyo3::exceptions::PySystemError>("a direct read lost its value")
+        };
         let pending = std::mem::take(&mut self.pending);
         let mut made: Vec<Bound<'py, PyAny>> = Vec::with_capacity(pending.len());
         // A part's object: its own where it was pending (made before it).
@@ -474,7 +477,7 @@ impl<'py> ObjMode<'py> {
 /// panics on one).
 fn list_raised<'py>(py: Python<'py>, items: Vec<Bound<'py, PyAny>>) -> PyResult<Bound<'py, PyAny>> {
     let len = isize::try_from(items.len())
-        .map_err(|_| pyo3::exceptions::PyOverflowError::new_err("a list too long"))?;
+        .map_err(|_| crate::errors::new::<pyo3::exceptions::PyOverflowError>("a list too long"))?;
     // SAFETY: a new list of `len` empty slots, or null with an exception
     // set.
     let list = unsafe { Bound::from_owned_ptr_or_err(py, ffi::PyList_New(len)) }?;

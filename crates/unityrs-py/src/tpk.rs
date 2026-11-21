@@ -16,7 +16,7 @@ impl NativeTpk {
         let mut providers: Vec<Arc<dyn TypeTreeProvider>> = Vec::new();
         providers
             .try_reserve_exact(1)
-            .map_err(|_| PyMemoryError::new_err("provider allocation refused"))?;
+            .map_err(|_| crate::errors::new::<PyMemoryError>("provider allocation refused"))?;
         providers.push(self.provider.clone());
         Ok(Arc::new(ProviderChain::new(providers)))
     }
@@ -34,8 +34,9 @@ impl NativeTpk {
         );
         let (path, _charge) = crate::path_snapshot::snapshot(path, &meter)?;
         py.detach(|| {
-            let provider = TpkProvider::open(path)
-                .map_err(|e| pyo3::exceptions::PyValueError::new_err(errors::message(&e)))?;
+            let provider = TpkProvider::open(path).map_err(|e| {
+                crate::errors::new::<pyo3::exceptions::PyValueError>(errors::message(&e))
+            })?;
             Ok(Self {
                 provider: Arc::new(provider),
             })

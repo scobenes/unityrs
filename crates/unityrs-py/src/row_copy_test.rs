@@ -1,4 +1,5 @@
-//! Test-only handshake at the detached row-copy boundary; absent from wheels.
+//! Test-only handshake at detached boundaries (a row copy, a value's
+//! staging, a read's core call); absent from wheels.
 use pyo3::{exceptions::PyRuntimeError, prelude::*};
 use std::{
     cell::RefCell,
@@ -6,6 +7,8 @@ use std::{
 };
 
 thread_local! {
+    static CORE_ARMED: RefCell<Option<Arc<State>>> = const { RefCell::new(None) };
+    static DECODE_ARMED: RefCell<Option<Arc<State>>> = const { RefCell::new(None) };
     static VALUE_ARMED: RefCell<Option<Arc<State>>> = const { RefCell::new(None) };
     static ARMED: RefCell<Option<Arc<State>>> = const { RefCell::new(None) };
 }
@@ -64,6 +67,18 @@ impl RowCopyBarrier {
         VALUE_ARMED.with(|armed| *armed.borrow_mut() = Some(self.0.clone()));
     }
 
+    /// The next read's tree compilation, as it starts detached
+    /// ([`before_core`]), waits for Python's acknowledgement.
+    fn arm_core(&self) {
+        CORE_ARMED.with(|armed| *armed.borrow_mut() = Some(self.0.clone()));
+    }
+
+    /// The next full-path read's value decode, as it starts detached
+    /// ([`before_decode`]), waits for Python's acknowledgement.
+    fn arm_decode(&self) {
+        DECODE_ARMED.with(|armed| *armed.borrow_mut() = Some(self.0.clone()));
+    }
+
     fn wait_for_copy(&self, py: Python<'_>) -> PyResult<()> {
         py.detach(|| self.0.wait(false))
     }
@@ -86,7 +101,27 @@ pub(crate) fn before_copy() -> PyResult<()> {
 }
 
 pub(crate) fn before_value() -> PyResult<()> {
-    let Some(state) = VALUE_ARMED.with(|armed| armed.borrow_mut().take()) else {
+    handshake(&VALUE_ARMED)
+}
+
+/// A read's tree compilation, detached: armed
+/// ([`RowCopyBarrier::arm_core`]), it waits for another Python thread to
+/// run and acknowledge, which that thread can do only while this call
+/// leaves the GIL released; held, the wait times out and the read raises.
+pub(crate) fn before_core() -> PyResult<()> {
+    handshake(&CORE_ARMED)
+}
+
+/// A full-path read's value decode, within its closure as it starts
+/// reading, as [`before_core`] ([`RowCopyBarrier::arm_decode`]): a decode
+/// holding the GIL fails it. Armed on the calling thread, where the test's
+/// read runs inline.
+pub(crate) fn before_decode() -> PyResult<()> {
+    handshake(&DECODE_ARMED)
+}
+
+fn handshake(cell: &'static std::thread::LocalKey<RefCell<Option<Arc<State>>>>) -> PyResult<()> {
+    let Some(state) = cell.with(|armed| armed.borrow_mut().take()) else {
         return Ok(());
     };
     state.phase.lock().map_err(lock_error)?.0 = true;
@@ -113,6 +148,29 @@ fn value_snapshot_releases_gil_on_calling_thread() -> PyResult<()> {
             py.import("binding_y4_round5")?
                 .getattr("observe_snapshot_threads")?
                 .call1((py.import("unityrs")?,))?;
+            Ok(())
+        })
+    })
+}
+
+#[test]
+fn core_call_releases_gil() -> PyResult<()> {
+    let _serial = crate::tests::serial();
+    unityrs_testkit::guard::finishes("a read's core call and competing Python thread", || {
+        Python::attach(|py| {
+            let module = PyModule::new(py, "unityrs._native")?;
+            super::native(&module)?;
+            py.import("sys")?
+                .getattr("modules")?
+                .set_item("unityrs._native", module)?;
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+            let paths = py.import("sys")?.getattr("path")?;
+            for directory in [root.join("python"), root.join("python/tests")] {
+                paths.call_method1("insert", (0, directory.to_string_lossy().as_ref()))?;
+            }
+            py.import("test_helpers")?
+                .getattr("test_core_call_releases_gil")?
+                .call0()?;
             Ok(())
         })
     })

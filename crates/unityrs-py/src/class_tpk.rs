@@ -19,8 +19,13 @@ pub(crate) fn class_tpk_lz4(
     let meter = Meter::unlimited();
     let _view_charge = meter.charge(256).map_err(errors::charge)?;
     let view = pyo3::types::PyMemoryView::from(data)?;
-    if view.getattr("nbytes")?.extract::<u64>()? > CAP || u64::from(decoded) > CAP {
-        return Err(pyo3::exceptions::PyValueError::new_err(
+    if view
+        .getattr(crate::direct_keys::name!(py, c"nbytes")?)?
+        .extract::<u64>()?
+        > CAP
+        || u64::from(decoded) > CAP
+    {
+        return Err(crate::errors::new::<pyo3::exceptions::PyValueError>(
             "TPK exceeds 256 MiB",
         ));
     }

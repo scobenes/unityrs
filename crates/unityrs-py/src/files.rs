@@ -16,14 +16,14 @@ impl NativeFile {
 }
 #[pymethods]
 impl NativeFile {
-    fn reference_types(
-        &self,
-        py: Python<'_>,
-    ) -> PyResult<(Py<PyAny>, crate::traversal::TreeTraversal)> {
-        py.detach(|| crate::reference_types::snapshot(self))
+    fn reference_types(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let snapshot = py.detach(|| crate::reference_types::snapshot(self))?;
+        crate::python::held::with_guard(py, snapshot)
     }
-    fn constructor_reader_state(&self, py: Python<'_>) -> (i128, Option<char>) {
-        py.detach(|| match &self.inner {
+    /// `(position, endian or None)`, made fallibly.
+    fn constructor_reader_state(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        use crate::python::held as h;
+        let (position, endian) = py.detach(|| match &self.inner {
             File::Serialized(file) => (
                 file.constructor_position(),
                 Some(
@@ -39,12 +39,17 @@ impl NativeFile {
                 (file.constructor_position(), Some('<'))
             }
             _ => (0, None),
-        })
+        });
+        let endian = endian.map_or_else(|| Ok(h::none(py)), |endian| h::char(py, endian))?;
+        let position = crate::python::wide_int(position)?.into_bound(py);
+        h::tuple_of(py, &[position, endian]).map(Bound::unbind)
     }
-    fn serialized_reader_info(&self, py: Python<'_>) -> PyResult<(usize, char, bool, i128)> {
-        py.detach(|| {
+    /// `(length, endian, stream, position)`, made fallibly.
+    fn serialized_reader_info(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        use crate::python::held as h;
+        let (length, endian, stream, position) = py.detach(|| {
             let File::Serialized(file) = &self.inner else {
-                return Err(pyo3::exceptions::PyAttributeError::new_err(
+                return Err(crate::errors::new::<pyo3::exceptions::PyAttributeError>(
                     "not a serialized reader",
                 ));
             };
@@ -58,12 +63,19 @@ impl NativeFile {
                 file.reader_kind() != unityrs_core::stream::ReaderKind::Memory,
                 file.constructor_position(),
             ))
-        })
+        })?;
+        let items = [
+            h::uint(py, length as u64)?,
+            h::char(py, endian)?,
+            h::boolean(py, stream)?,
+            crate::python::wide_int(position)?.into_bound(py),
+        ];
+        h::tuple_of(py, &items).map(Bound::unbind)
     }
     fn serialized_read(&self, py: Python<'_>, position: i128, size: i64) -> PyResult<Py<PyAny>> {
         let (bytes, next, _copy) = py.detach(|| {
             let File::Serialized(file) = &self.inner else {
-                return Err(pyo3::exceptions::PyAttributeError::new_err(
+                return Err(crate::errors::new::<pyo3::exceptions::PyAttributeError>(
                     "not a serialized reader",
                 ));
             };
@@ -74,10 +86,9 @@ impl NativeFile {
             let (span, next) = kind
                 .read(file.data().len(), start, size)
                 .map_err(|e| errors::stream(e.exception()))?;
-            let bytes = file
-                .data()
-                .get(span)
-                .ok_or_else(|| pyo3::exceptions::PyEOFError::new_err("serialized reader span"))?;
+            let bytes = file.data().get(span).ok_or_else(|| {
+                crate::errors::new::<pyo3::exceptions::PyEOFError>("serialized reader span")
+            })?;
             file.meter()
                 .count_decode(bytes.len() as u64)
                 .map_err(errors::charge)?;
@@ -182,13 +193,14 @@ impl NativeFile {
         crate::traversal::TreeTraversal::with_limits(self.inner.meter(), &limits)
     }
     #[getter]
-    fn identity(&self, py: Python<'_>) -> usize {
-        py.detach(|| match &self.inner {
+    fn identity(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let identity = py.detach(|| match &self.inner {
             File::Serialized(f) => Arc::as_ptr(f) as usize,
             File::Bundle(f) => Arc::as_ptr(f) as usize,
             File::Web(f) => Arc::as_ptr(f) as usize,
             File::Raw(f) => Arc::as_ptr(f) as usize,
-        })
+        });
+        crate::python::held::uint(py, identity as u64).map(Bound::unbind)
     }
     fn metadata(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         py.detach(|| {
@@ -372,7 +384,7 @@ impl NativeFile {
     fn raw_read(&self, py: Python<'_>, position: i128, size: i64) -> PyResult<Py<PyAny>> {
         py.detach(|| {
             let File::Raw(f) = &self.inner else {
-                return Err(pyo3::exceptions::PyAttributeError::new_err(
+                return Err(crate::errors::new::<pyo3::exceptions::PyAttributeError>(
                     "not a raw reader",
                 ));
             };
@@ -386,7 +398,7 @@ impl NativeFile {
             let bytes = f
                 .data
                 .get(range)
-                .ok_or_else(|| pyo3::exceptions::PyEOFError::new_err("raw span"))?;
+                .ok_or_else(|| crate::errors::new::<pyo3::exceptions::PyEOFError>("raw span"))?;
             let _copy = f
                 .meter()
                 .charge(unityrs_core::limits::heap_cost(bytes.len() as u64))
@@ -405,7 +417,7 @@ impl NativeFile {
                 .count_decode(path.len() as u64)
                 .map_err(errors::charge)?;
             if path.contains(&0) || path.len() > unityrs_core::stream::STRING_TO_NULL_WINDOW {
-                return Err(pyo3::exceptions::PyValueError::new_err(
+                return Err(crate::errors::new::<pyo3::exceptions::PyValueError>(
                     "CAB external path out of range",
                 ));
             }
@@ -421,7 +433,7 @@ impl NativeFile {
                     .map_err(errors::charge)?;
                 p::bytes(&f.data)
             }
-            _ => Err(pyo3::exceptions::PyAttributeError::new_err(
+            _ => Err(crate::errors::new::<pyo3::exceptions::PyAttributeError>(
                 "file is not a raw reader",
             )),
         })
