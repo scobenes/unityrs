@@ -447,29 +447,56 @@ EXPECTED_FAILURES = {name: (f"Record {name}: Left Upper Leg Twist In-Out at 1 tu
 
 def accepted_failure(row):
     """An expected failure's run.json row as completion lists it, not covered with its accepted reason; None for
-    any other row, a listed case failing with another message among them."""
+    any other row, a listed case failing with another message among them. It only ever yields `not_covered`, never
+    a pass, and `check_inventory` also requires the sweep's own bundle, which the recorder builds before it
+    records.
+
+    The message is the strongest evidence the recorder leaves: it writes no partial capture and logs no
+    per-muscle progress, only the first failing sample (UnityrsBodyRecording.CheckBodyResponse checks the samples
+    in the builder's order and stops there, so every earlier single-muscle sample turned its bone). A regression
+    that stopped this muscle's own bone for another reason would fail with the same message; the consequence is
+    the sweep's lost coverage, which B5a's confirmation already lacks, never a false pass."""
     expected = EXPECTED_FAILURES.get(row.get("name"))
     if expected and row.get("status") == "failed" and row.get("reason") == expected[0]:
         return dict(row, status="not_covered", reason="expected failure: " + expected[1])
     return None
 
 
-def resolve_preview(headers, doc):
-    """A `show` document's full container path in place of the shortened preview `inspect` lists for a path over
-    its listing length, so completion compares the object's whole identity: only where the preview is that path's
-    (its prefix, its length, the characters it omits) and every other field is the same. Anything else stays as
-    listed, and the identity check refuses it."""
+# The most source bytes `inspect` lists of a string (the CLI's agent/listing.rs `string`).
+PREVIEW_BYTES = 128
+
+
+def preview_of(path):
+    """`path` as `inspect` lists it: itself, or past PREVIEW_BYTES UTF-8 bytes a preview of its first 128 bytes,
+    cut back to a whole code point, with its byte length and the bytes omitted."""
+    data = path.encode("utf-8")
+    if len(data) <= PREVIEW_BYTES:
+        return path
+    prefix = data[:PREVIEW_BYTES]
+    try:
+        prefix.decode("utf-8")
+    except UnicodeDecodeError as error:
+        prefix = prefix[:error.start]
+    return {"$unityrs": "preview", "length": len(data), "prefix": prefix.decode("utf-8"),
+            "omitted": len(data) - len(prefix)}
+
+
+def resolve_preview(headers, doc, listed):
+    """A `show` document's full container path in place of the preview `inspect` lists for a long one, so
+    completion compares the object's whole identity. Only where the bundle's own container table lists exactly
+    that path for the object (`listed(key)`, a read apart from show's object header), the listed preview is that
+    path's (`preview_of`), and every other field is the same. Anything else stays as listed, and the identity
+    check refuses it."""
     obj = doc.get("object") if isinstance(doc, dict) else None
     if not isinstance(obj, dict):
         return
-    head = headers.get((obj.get("file_index"), obj.get("path_id")))
+    key = (obj.get("file_index"), obj.get("path_id"))
+    head = headers.get(key)
     preview, full = (head or {}).get("container_path"), obj.get("container_path")
-    if (isinstance(preview, dict) and set(preview) == {"$unityrs", "length", "prefix", "omitted"}
-            and preview["$unityrs"] == "preview" and isinstance(full, str) and isinstance(preview["prefix"], str)
-            and len(full) == preview["length"] and full.startswith(preview["prefix"])
-            and preview["omitted"] == len(full) - len(preview["prefix"]) > 0
+    if (isinstance(preview, dict) and isinstance(full, str) and preview == preview_of(full)
             and {k: v for k, v in head.items() if k != "container_path"}
-            == {k: v for k, v in obj.items() if k != "container_path"}):
+            == {k: v for k, v in obj.items() if k != "container_path"}
+            and listed(key) == {full}):
         head["container_path"] = full
 
 
@@ -490,8 +517,20 @@ def round11_tables():
         def document(self, mode, options, name):
             doc = super().document(mode, options, name)
             if mode == "show":
-                resolve_preview(self.headers, doc)
+                resolve_preview(self.headers, doc, self.container_paths)
             return doc
+
+        def container_paths(self, key):
+            """The paths the bundle's AssetBundle container table lists for `key`, read as BundleView.asset
+            reads that table."""
+            if self.container is None:
+                self.container = []
+                for owner, header in self.headers.items():
+                    if header["class_id"] == 142:
+                        container = self.value(owner)["m_Container"]
+                        rows = container.items() if isinstance(container, dict) else container
+                        self.container.extend((path, owner, info["asset"]) for path, info in rows)
+            return {path for path, owner, ptr in self.container if self.pointer(owner, ptr) == key}
 
     cases, info = body.BODY_CASES | ROUND11_CASES, body.BODY_INFO | ROUND11_INFO
     patches = [(body, "BODY_CASES", cases), (body, "BODY_INFO", info), (body, "rig_bones", rig_bones),
@@ -526,6 +565,11 @@ def check_inventory(folder, replay):
                                 "run_id": manifest["run"].get("run_id")}, "round.json does not declare this round 11 run")
     statuses = {row["name"]: row.get("status") for row in manifest["cases"]}
     accepted = {row["name"] for row in manifest["cases"] if accepted_failure(row)}
+    # An expected failure's sweep was built before it was recorded: its bundle is there, as a recorded case's.
+    for name in sorted(accepted):
+        bundle = folder / "bundles" / ROUND11_CASES[name].bundle
+        replay.require(bundle.is_file() and bundle.stat().st_size > 0,
+                       f"{name}: expected failure without its bundle {ROUND11_CASES[name].bundle}")
     missing = sorted((body.BODY_CASES.keys() | ROUND11_CASES.keys()) - statuses.keys())
     replay.require(not missing, f"round 11 run lacks {len(missing)} body case(s): " + ", ".join(missing[:20]))
     # Every body case a round 11 run expects is recorded: a refused Avatar, a dropped curve or a skipped case
