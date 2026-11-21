@@ -11,6 +11,12 @@ rust-version.workspace = true
 license = "(MIT OR Apache-2.0) AND PSF-2.0"
 repository.workspace = true
 authors.workspace = true
+readme.workspace = true
+keywords = ["python", "sum", "float", "compensated", "fsum"]
+categories = ["mathematics", "algorithms"]
+# The package carries the code and its notices; tests, fixtures and
+# examples stay in the repository.
+include = ["/src/**", "/LICENSE-*", "/NOTICE-*"]
 
 [dev-dependencies]
 # The vectors (tests/support/python_sum.json) are JSON.
