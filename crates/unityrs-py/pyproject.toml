@@ -3,7 +3,7 @@ requires = ["maturin==1.9.6"]
 build-backend = "maturin"
 
 [project]
-name = "unityrs"
+name = "unityrs-py"
 version = "1.0.0"
 requires-python = ">=3.10"
 # UnityPy record semantics (slots, inheritance, equality, hashing); MIT.
