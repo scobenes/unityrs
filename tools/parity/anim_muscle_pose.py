@@ -312,8 +312,8 @@ def cases(unityrs, folders):
     """Real-Avatar cases from training runs: each bone's recorded samples, known vectors and clip playback alike,
     and the schedule on its axes. A round 11 run (`round.json`) adds its inventory (anim_muscle_round11: the
     sweeps and full-body clips), and its entries are confirmation, never acceptance, kept for Rust's bit-for-bit
-    check (anim_muscle_confirm judges round 11 from the run folders). `missing` records the required cases the
-    acceptance runs lack."""
+    check (anim_muscle_confirm judges round 11 from the run folders). They open through round 11's own view
+    (anim_muscle_round11.Recordings' default). `missing` records the required cases the acceptance runs lack."""
     import anim_body_runs as runs
     import anim_muscle_round11 as round11
     from anim_body_freeze import readers

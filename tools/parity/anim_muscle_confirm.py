@@ -22,7 +22,8 @@ round 11's builder tables, never from literals:
 
 **Observed** (`observe`): what the run folders recorded, from their raw captures and bundles.
 - Each run must declare round 11 and record its whole body inventory (anim_fixture_round11.check_inventory).
-- Each capture's own metadata names its case, run, Editor and bundle (anim_muscle_round11.Recordings).
+- Each capture's own metadata names its case, run, Editor and bundle (anim_muscle_round11.Recordings), and
+  each opens lazily through a view (anim_fixture_round12.View), round 11's own by default.
 - A sample is identified as above, its time from the same source time the prediction and bound use (one
   whose recorded local time disagrees is refused). A sweep's must be one of the builder's vectors, at its time
   and with its values, and a clip's must be one of the schedule's times. A sample recorded twice is refused.
@@ -334,8 +335,9 @@ def observe_capture(editor, case, spec, doc, avatar, clip, seen):
                 seen.refused[key] = (angle(local, recorded), bound, reason)
 
 
-def observe(folders, avatar_of, clip_of, cases=None):
-    """The round 11 runs' comparisons, through `avatar_of` and `clip_of` (anim_body_freeze.readers)."""
+def observe(folders, avatar_of, clip_of, cases=None, view_of=None):
+    """The round 11 runs' comparisons, through `avatar_of` and `clip_of` (anim_body_freeze.readers). Each run's
+    captures open lazily through `view_of(folder)` (anim_fixture_round12.View), by default round 11's own view."""
     import anim_fixture_round11 as r11
     import anim_muscle_round11 as round11
 
@@ -347,15 +349,16 @@ def observe(folders, avatar_of, clip_of, cases=None):
         r11.check_inventory(folder, replay)
         editor = editor_of(replay.read_json((folder / "run.json").read_text(encoding="utf-8"))["run"]
                            .get("editor_version"))
-        run = round11.Recordings(folder)
+        run = round11.Recordings(folder, view_of(folder) if view_of else None)
         replay.require(editor not in seen.runs, f"two round 11 runs of Editor {editor}")
         seen.runs[editor] = run.run_id
         seen.errors += [f"Editor {editor}'s run lacks {case}" for case in run.missing if case in cases]
-        for case, doc in sorted(run.documents.items()):
+        for case in sorted(run.documents):
             if case not in builder:
                 seen.errors.append(f"Editor {editor}'s run records {case}, a full-body clip the builder never made")
             if case not in cases:
                 continue
+            doc = run.documents[case]
             clip = None if cases[case][0] == "probes" else clip_of(run, doc)
             observe_capture(editor, case, cases[case], doc, avatar_of(run, doc), clip, seen)
     return seen

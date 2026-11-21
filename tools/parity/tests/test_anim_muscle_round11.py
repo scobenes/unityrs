@@ -2,11 +2,14 @@
 freeze v8's frozen Run, and a round 11 run's declaration."""
 
 import json
+import os
 import unittest
+from pathlib import Path
 
 import test_anim_replay_coverage  # noqa: F401  (puts tools/parity on the path)
 
 import anim_body_runs as runs  # noqa: E402
+import anim_fixture_round12 as round12  # noqa: E402
 import anim_fixture_round11 as r11  # noqa: E402
 import anim_muscle_round11 as round11  # noqa: E402
 import scratch  # noqa: E402
@@ -47,11 +50,18 @@ class InventoryTests(unittest.TestCase):
         self.assertEqual(len(required), 348)
 
 
+def read(folder, view=None):
+    """Recordings of `folder` through `view` (round 11's own by default), every document read."""
+    run = round11.Recordings(folder, view)
+    dict(run.documents)
+    return run
+
+
 class RunTests(unittest.TestCase):
     def folder(self, recorded=(), round_json=True, run_id="r", bundle=None, identity=None):
         """A round 11 run folder; each recorded capture names its own case, run, Editor and bundle, as
         `identity` (case: (case, run, Editor version)) overrides."""
-        folder = scratch.for_case(self)
+        folder = Path(os.path.realpath(scratch.for_case(self)))  # resolved: a macOS scratch root sits under the /var symlink, which run_file refuses
         rows = [dict(name=name, status="recorded" if name in recorded else "not_covered") for name in round11.CASES]
         (folder / "run.json").write_text(json.dumps(dict(run=dict(run_id="r", editor_version="6000.6.9f1"),
                                                          cases=rows)), encoding="utf-8")
@@ -75,7 +85,7 @@ class RunTests(unittest.TestCase):
 
     def test_the_recordings_and_what_the_run_lacks(self):
         recorded = ("body-probes-face", "body-clip-compact-full-level")
-        run = round11.Recordings(self.folder(recorded))
+        run = read(self.folder(recorded))
         self.assertEqual(sorted(run.documents), sorted(recorded))
         self.assertEqual(len(run.missing), 345)
         self.assertIn("body-probes-fingers", run.missing)
@@ -84,11 +94,11 @@ class RunTests(unittest.TestCase):
     def test_a_recorded_case_without_its_file_is_missing(self):
         folder = self.folder(("body-probes-face",))
         (folder / "replays" / "body" / "body-probes-face.pending.json").unlink()
-        self.assertIn("body-probes-face", round11.Recordings(folder).missing)
+        self.assertIn("body-probes-face", read(folder).missing)
 
     def test_another_bundle_is_refused(self):
         with self.assertRaisesRegex(ValueError, "another bundle"):
-            round11.Recordings(self.folder(("body-probes-face",), bundle="body-muscles-compact"))
+            read(self.folder(("body-probes-face",), bundle="body-muscles-compact"))
 
     def test_a_capture_is_its_own_metadatas_case(self):
         # Its file name never decides: a capture copied to another case of the same bundle, another run's, or
@@ -98,8 +108,29 @@ class RunTests(unittest.TestCase):
                                   ((clips[0], "other", "6000.6.9f1"), "another run"),
                                   ((clips[0], "r", "2022.3.62f3"), "another Editor version")):
             with self.subTest(pattern=pattern), self.assertRaisesRegex(ValueError, pattern):
-                round11.Recordings(self.folder(clips[:1], identity={clips[0]: identity}))
-        self.assertEqual(sorted(round11.Recordings(self.folder(clips)).documents), sorted(clips))
+                read(self.folder(clips[:1], identity={clips[0]: identity}))
+        self.assertEqual(sorted(read(self.folder(clips)).documents), sorted(clips))
+
+    def test_a_sealed_case_is_listed_but_never_opened(self):
+        # Through round 12's exploration view, B5a's face sweep is listed by name, and reading it is refused
+        # before its file opens; a witness Avatar's clip opens. Round 11's own default view opens both.
+        import anim_twist_witness as witness
+
+        allowed = witness.allowlisted("compact")
+        folder = self.folder(("body-probes-face", allowed))
+        self.assertEqual(sorted(read(folder).documents), sorted(("body-probes-face", allowed)))
+        run = round11.Recordings(folder, round12.round11_view(folder))
+        self.assertEqual(sorted(run.documents), sorted(("body-probes-face", allowed)))
+        self.assertEqual(run.view.read, {"run.json": run.view.read["run.json"]})
+        with self.assertRaisesRegex(ValueError, "sealed"):
+            run.documents["body-probes-face"]
+        self.assertNotIn("replays/body/body-probes-face.pending.json", run.view.read)
+        self.assertEqual(run.documents[allowed]["spec"]["evidence"]["editor"]["fixture_case"], allowed)
+        # Another round 11 clip is no case of the allowlist at all.
+        other = "body-clip-tall-scoped-level-offset"
+        with self.assertRaisesRegex(ValueError, "not a case this view can open"):
+            folder = self.folder((other,))
+            read(folder, round12.round11_view(folder))
 
 
 if __name__ == "__main__":

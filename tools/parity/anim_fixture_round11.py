@@ -586,35 +586,109 @@ def check_inventory(folder, replay):
     replay.require(not unrecorded, f"round 11 body cases not recorded ({len(unrecorded)}): " + ", ".join(unrecorded))
 
 
-def check_accepted_bundles(folder, replay, open_view):
+def check_accepted_bundles(folder, replay, open_view, held=()):
     """Each expected failure's bundle opens as a bundle of this run (`open_view`, anim_replay_complete.BundleView:
     its UnityFS signature, its inspection, its Editor version and run stamp) and lists the sweep's prefab, so a
-    placeholder or a stale file fails."""
+    placeholder or a stale file fails. A case in `held` (round 12's sealed evidence before its claim) is never
+    opened: its name is returned instead."""
     manifest = replay.read_json((folder / "run.json").read_text(encoding="utf-8"))
+    skipped = []
     for row in manifest["cases"]:
         if accepted_failure(row):
+            if row["name"] in held:
+                skipped.append(row["name"])
+                continue
             fixture = ROUND11_CASES[row["name"]]
             view = open_view(folder / "bundles" / fixture.bundle)
             view.asset(f"assets/unityrsfixtures/{fixture.folder}/{fixture.prefab}.prefab", 1)
+    return skipped
 
 
-def complete_round(folder, unityrs, inspect_dir, replay):
-    """Complete a round 11 run: its inventory and its expected failures' bundles, then every check `complete`
-    runs, with round 11's tables."""
-    import anim_replay_complete as complete
+def complete_round(folder, unityrs, inspect_dir, replay, intake_digest=None):
+    """Complete a round 11 run: its inventory and its expected failures' bundles (`check_accepted_bundles`), then
+    every check `complete` runs, with round 11's tables. Round 12
+    reuses some round 11 cases as sealed evidence (anim_fixture_round12.round11_cases: the finger and face sweeps
+    and B5a's refusal clips); they stay unread and undecoded, listed as held, unless `intake_digest` names the round
+    12 intake whose claim exists and binds this run (`_claimed_copy`): completion then decodes a private copy of
+    the run whose every bound file is the bytes that intake hashed. Returns (count, uncovered, sealed, held)."""
+    from anim_fixture_round12 import round11_cases
 
     check_inventory(folder, replay)
+    if intake_digest is None:
+        held = {case for case, partition in round11_cases().items() if partition != "exploration"}
+        return _complete_held(folder, unityrs, inspect_dir, replay, held)
+    replay.require(inspect_dir is None, "round 12's sealed evidence decodes only from the claimed bytes: "
+                                        "--inspect-dir reads JSON outside them")
+    import scratch
+
+    with scratch.folder("unityrs-round11-") as private:
+        copy = _claimed_copy(folder, intake_digest, private)
+        return _complete_held(copy, unityrs, inspect_dir, replay, set())
+
+
+def _claimed_copy(folder, intake_digest, private):
+    """A private copy of round 11 run `folder` under `private`, refused unless the claim of `intake_digest` holds a
+    record (anim_twist_seal.claimed_record) binding this run, by its run id, listing every reused case's capture and
+    bundle (anim_fixture_round12.round11_cases: all completion opens of round 12's evidence), and every file that
+    record bound is byte for byte the copy's. The run holds no symlink, to a file or a folder."""
+    import hashlib
+    import os
+    import shutil
+
+    import anim_replay as replay
+    from anim_fixture_round12 import editor_of_run, round11_cases
+    from anim_twist_seal import claimed_record
+
+    bound = claimed_record(intake_digest)["round11"]
+    _, run_id, _ = editor_of_run(folder)
+    runs = [row for row in bound.values() if row.get("run_id") == run_id]
+    replay.require(len(runs) == 1, f"the claim of intake {intake_digest[:12]} does not bind round 11 run "
+                                   f"{Path(folder).name}")
+    listed = runs[0]["files"]
+    unlisted = sorted(name for case in round11_cases() for name in (
+        f"replays/body/{case}.pending.json", f"bundles/{ROUND11_CASES[case].bundle}") if name not in listed)
+    replay.require(not unlisted, f"the claim does not list round 12's sealed evidence: {unlisted[:3]}")
+    links = [Path(folder)] if Path(folder).is_symlink() else []
+    for top, dirs, files in os.walk(folder, followlinks=False):
+        links += [Path(top) / name for name in dirs + files if (Path(top) / name).is_symlink()]
+    replay.require(not links, f"{Path(folder).name} holds a symlink: {links[0].name if links else ''}")
+    copy = Path(shutil.copytree(folder, Path(private) / Path(folder).name, symlinks=True))
+    changed = sorted(name for name, digest in runs[0]["files"].items()
+                     if not (copy / name).is_file() or (copy / name).is_symlink()
+                     or hashlib.sha256((copy / name).read_bytes()).hexdigest() != digest)
+    replay.require(not changed, f"{Path(folder).name}'s files differ from the claimed intake's: {changed[:3]}")
+    return copy
+
+
+def _complete_held(folder, unityrs, inspect_dir, replay, held):
+    import anim_replay_complete as complete
+
     run = complete.read_manifest(folder, replay)[1]
+    base, skipped = complete.recorded_paths, []
+
+    def gated(*args):
+        paths, mixed, run, uncovered = base(*args)
+        kept = [path for path in paths if not (path.parent.name == "body"
+                                               and path.name.removesuffix(".pending.json") in held)]
+        skipped[:] = sorted(path.name.removesuffix(".pending.json") for path in paths if path not in kept)
+        return kept, mixed, run, uncovered
     with round11_tables():
-        check_accepted_bundles(folder, replay, lambda path: complete.BundleView(
-            path, complete.bundle_digest(path), 0, unityrs, inspect_dir, replay, run))
-        return complete.complete_folder(folder, unityrs, inspect_dir, replay)
+        unopened = check_accepted_bundles(folder, replay, lambda path: complete.BundleView(
+            path, complete.bundle_digest(path), 0, unityrs, inspect_dir, replay, run), held)
+        complete.recorded_paths = gated
+        try:
+            count, uncovered, sealed = complete.complete_folder(folder, unityrs, inspect_dir, replay)
+        finally:
+            complete.recorded_paths = base
+    return count, uncovered, sealed, sorted(set(skipped) | set(unopened))
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("mode", choices=("complete",))
     parser.add_argument("folder", type=Path)
+    parser.add_argument("--intake-digest", help="a claimed round 12 intake binding this run, to open its sealed "
+                                                "evidence too")
     inspection = parser.add_mutually_exclusive_group()
     inspection.add_argument("--unityrs", help="unityrs executable (default: unityrs on PATH)")
     inspection.add_argument("--inspect-dir", type=Path, help="saved inspect and show JSON")
@@ -623,7 +697,8 @@ def main():
 
     executable = str(Path(args.unityrs).resolve()) if args.unityrs else "unityrs"
     try:
-        count, uncovered, sealed = complete_round(args.folder, executable, args.inspect_dir, anim_replay)
+        count, uncovered, sealed, held = complete_round(args.folder, executable, args.inspect_dir, anim_replay,
+                                                        args.intake_digest)
     except (ValueError, OSError, OverflowError) as exc:
         parser.exit(1, f"anim_fixture_round11: {exc}\n")
     print(f"Completed and validated {count} replay(s) of round {ROUND}.")
@@ -631,6 +706,8 @@ def main():
         print(f"Optional coverage not recorded: {row}")
     for name in sealed:
         print(f"Sealed hold-out case, not opened: {name} (only E3b unseals it: anim_body_freeze.py e3b)")
+    for name in held:
+        print(f"Round 12 sealed evidence, not opened: {name} (only the round 12 seal opens it: anim_twist_seal.py)")
 
 
 if __name__ == "__main__":
