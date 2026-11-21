@@ -89,7 +89,9 @@ static partial class UnityrsFixtureBuilder
             }
     }
 
-    static BodyProbe[] MuscleSchedule(string name, string[] mapped)
+    static BodyProbe[] MuscleSchedule(string name, string[] mapped) => Scheduled(MuscleVectors(name, mapped), false);
+
+    static List<float[]> MuscleVectors(string name, string[] mapped)
     {
         var names = HumanTrait.MuscleName;
         var groups = SweepGroups(name, mapped);
@@ -108,7 +110,7 @@ static partial class UnityrsFixtureBuilder
                 for (int k = 0; k < group.Length; k++) vector[MuscleIndex(names, group[k])] = values[k % values.Length];
                 vectors.Add(vector);
             }
-        return Scheduled(vectors, false);
+        return vectors;
     }
 
     // The body generation a main run declares beside run.json: round 11 adds E5's

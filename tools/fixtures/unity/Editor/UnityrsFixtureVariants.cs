@@ -26,6 +26,11 @@ static partial class UnityrsFixtureBuilder
             + UrpMenu + " instead.";
         public Action<RunReport> AddDeferred = report => { };
         public Func<RunReport, Scene, string, Build> Prepare;
+        // Round 12 (UnityrsRound12.cs): its own output root, body bundles only, the staging folder kept on any
+        // failure, and a last step (inventory and round.json) whose summary the dialog shows.
+        public string Root = Output;
+        public bool BodyOnly, KeepStaging;
+        public Func<RunReport, string, RunIdentity, string> Finish;
     }
 
     static Variant BuiltInVariant(bool record)

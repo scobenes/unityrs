@@ -115,16 +115,33 @@ static partial class UnityrsFixtureBuilder
                 BuildAssetBundleOptions.ChunkBasedCompression | BuildAssetBundleOptions.StrictMode, target);
             Require(manifest != null, "Unity could not build the " + label + " bundles. See the log and Console.");
             contents = BundleContents(manifest);
+        });
+        // Each bundle moves on its own: one that cannot fails only its cases, and the rest still move and record.
+        // Whatever did not move stays in the staged folder, never deleted.
+        bool moved = built;
+        // A bundle that did not move is never checked or recorded from whatever file is at its destination: its
+        // cases keep their move failure.
+        var unmoved = new HashSet<string>(StringComparer.Ordinal);
+        if (built)
             foreach (var bundle in group)
             {
                 string name = bundle.assetBundleName;
-                Require(contents.ContainsKey(name), "Unity did not emit " + name + ".");
-                File.Move(Path.Combine(folder, name), Path.Combine(bundles, name));
+                var cases = build.Replays.Where(replay => replay.Optional && member(replay) && replay.Bundle == name)
+                    .Select(replay => replay.OutputName).ToArray();
+                if (report.Try("Move " + name, cases, () => {
+                    Require(contents.ContainsKey(name), "Unity did not emit " + name + ".");
+                    File.Move(Path.Combine(folder, name), Path.Combine(bundles, name));
+                })) continue;
+                moved = false;
+                unmoved.Add(name);
+                contents.Remove(name);
             }
-        });
-        try { if (Directory.Exists(folder)) Directory.Delete(folder, true); }
-        catch (IOException error) { Debug.LogException(error); }
-        catch (UnauthorizedAccessException error) { Debug.LogException(error); }
+        if (moved)
+        {
+            try { if (Directory.Exists(folder)) Directory.Delete(folder, true); }
+            catch (IOException error) { Debug.LogException(error); }
+            catch (UnauthorizedAccessException error) { Debug.LogException(error); }
+        }
         if (!built) return null;
         // A failed check leaves its case failed and unrecorded; a body clip whose
         // built settings Unity changed is not covered. Cases sharing a bundle,
@@ -135,7 +152,8 @@ static partial class UnityrsFixtureBuilder
         var outcomes = new Dictionary<string, (Exception failure, bool indexed)>(StringComparer.Ordinal);
         build.Replays.RemoveAll(replay => {
             if (!replay.Optional || !member(replay)) return false;
-            string key = replay.Bundle + "\n" + replay.Avatar + "\n" + replay.Clip;
+            if (unmoved.Contains(replay.Bundle)) return true;
+            string key =replay.Bundle + "\n" + replay.Avatar + "\n" + replay.Clip;
             if (!outcomes.TryGetValue(key, out var outcome))
             {
                 outcome.indexed = true;

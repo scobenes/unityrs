@@ -186,7 +186,8 @@ public static partial class AnimReplayRecorder
         double[] Values(string[] bits) => bits.Select(b => (double)Value(b)).ToArray();
         Need(capture != null, "Body capture is not humanoid for " + name + ".");
         var nodes = capture.humanoid.bones.ToDictionary(bone => bone.name, bone => bone.node, StringComparer.Ordinal);
-        if (fixture.Body.Variant == "muscle")
+        // A round 12 table sweep or probe records it as a diagnostic (UnityrsRound12Recording.cs).
+        if (fixture.Body.Variant == "muscle" || fixture.Body.Variant == "table")
         {
             var zero = capture.samples.FirstOrDefault(sample => sample.muscles_f32.All(bits => bits == "00000000" || bits == "80000000"));
             Need(zero != null, name + " records no zero-vector sample.");
@@ -197,9 +198,16 @@ public static partial class AnimReplayRecorder
                 if (moved.Length != 1 || !UnityrsFixtureBuilder.MuscleValues.Contains(Math.Abs(values[moved[0]]))) continue;
                 var muscle = capture.humanoid.muscles[moved[0]];
                 int node = capture.humanoid.bones[muscle.bone].node;
-                Need(node >= 0, name + " sweeps " + muscle.name + " but maps no bone for it.");
+                if (node < 0)
+                {
+                    // A round 12 toe-absent probe sweeps a toe muscle on a rig without toes: a diagnostic there.
+                    Check(false, "own_bone_mapped", Array.IndexOf(capture.samples, sample), double.NaN, 0,
+                        name + " sweeps " + muscle.name + " but maps no bone for it.");
+                    continue;
+                }
                 double turn = Angle(Values(zero.pose.transforms[node].rotation), Values(sample.pose.transforms[node].rotation));
-                Need(turn * 180 / Math.PI >= LeastTurn, muscle.name + " at " + values[moved[0]].ToString("R", CultureInfo.InvariantCulture)
+                Check(turn * 180 / Math.PI >= LeastTurn, "own_bone_turn", Array.IndexOf(capture.samples, sample),
+                    turn * 180 / Math.PI, LeastTurn, muscle.name + " at " + values[moved[0]].ToString("R", CultureInfo.InvariantCulture)
                     + " turned no bone in " + name + ".");
             }
         }
@@ -212,16 +220,18 @@ public static partial class AnimReplayRecorder
             {
                 var played = Values(body.Samples[k].readback_muscles);
                 foreach (int index in lateral)
-                    Need(index < played.Length && Math.Abs(played[index]) <= LateralLimit, name + " is in scope but "
+                    Check(index < played.Length && Math.Abs(played[index]) <= LateralLimit, "lateral", k,
+                        index < played.Length ? Math.Abs(played[index]) : double.NaN, LateralLimit, name + " is in scope but "
                         + capture.humanoid.muscles[index].name + " played " + (index < played.Length
                         ? played[index].ToString("R", CultureInfo.InvariantCulture) : "nothing") + " at sample " + k
                         + ", over the lateral limit " + LateralLimit.ToString("R", CultureInfo.InvariantCulture) + ".");
                 var points = FrameBones.Select(bone => Values(body.Samples[k].nodes[nodes[bone]].position)).ToArray();
                 double twist = ShoulderHipTwist(points);
-                Need(twist <= TwistLimit, name + " is in scope but its shoulder-hip twist at sample " + k + " is "
+                Check(twist <= TwistLimit, "shoulder_hip_twist", k, twist, TwistLimit, name + " is in scope but its shoulder-hip twist at sample " + k + " is "
                     + twist.ToString("R", CultureInfo.InvariantCulture) + " rad, over " + TwistLimit.ToString("R", CultureInfo.InvariantCulture) + ".");
             }
         }
+        if (fixture.Diagnose) AddMotionTable(capture);
     }
 
     // anim_reference.py angle: radians between two rotations, either sign.

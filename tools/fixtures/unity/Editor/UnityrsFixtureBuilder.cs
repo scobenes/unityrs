@@ -140,6 +140,14 @@ static partial class UnityrsFixtureBuilder
         }
 
         public void Note(string name, string note) => notes[name] = note;
+        public void Log(string message) => log(message);
+
+        // Fail a case, keeping the reason of one that has already failed.
+        public void Fail(string name, string reason)
+        {
+            if (cases[name].status == "failed") cases[name].reason += " (" + reason + ")";
+            else Set(name, "failed", reason);
+        }
 
         public void Set(string name, string status, string reason = "")
         {
@@ -207,7 +215,7 @@ static partial class UnityrsFixtureBuilder
         var target = variant.Target;
         var run = new RunIdentity { build_target = target.ToString(), build_target_id = (int)target, variant = variant.Name };
         string version = run.editor_version;
-        string relative = Path.Combine(Output, version, variant.Folder);
+        string relative = Path.Combine(variant.Root, version, variant.Folder);
         string assetDirectory = Path.GetFullPath(Application.dataPath);
         string project = Path.GetDirectoryName(assetDirectory);
         string generated = Path.Combine(assetDirectory, AssetFolder);
@@ -215,8 +223,13 @@ static partial class UnityrsFixtureBuilder
         string shortId = run.run_id.Substring(0, 8);
         string staging = output + ".b-" + shortId;
         string stagedLog = Path.Combine(staging, LogFile);
-        bool publishing = false, preserveStaging = false;
+        bool publishing = false, preserveStaging = variant.KeepStaging;
+        // Where the run was published, once it is: a later failure names it, not the renamed staging folder.
+        string published = null;
         string[] failures;
+        string finished = null;
+        // A run with failures never replaces an earlier output: it publishes beside it, under its own name.
+        string destination = output, shown = relative;
         try
         {
             CheckOwned(output);
@@ -237,19 +250,50 @@ static partial class UnityrsFixtureBuilder
                 Application.logMessageReceived += UnityLog;
                 try
                 {
-                    Require(!EditorApplication.isPlayingOrWillChangePlaymode && !AnimationMode.InAnimationMode(),
-                        "Exit Play Mode and animation preview, then try again.");
-                    Require(variant.PipelineReady(), variant.PipelineMessage);
-                    CheckOwned(generated);
-                    Folder(Assets);
-                    WriteMarker(generated, run.Stamp);
-
                     var report = new RunReport(Log, variant.Cases);
                     variant.AddDeferred(report);
-                    Progress("Preparing fixtures", .05f);
-                    var build = PrepareInFixtureScene(report, run.Stamp, variant.Prepare, ref preserveStaging);
-                    BuildAndCapture(build, report, staging, run, target, variant.Record, Log);
+                    // A run with a last step (round 12) writes it and run.json even when a preflight check, building
+                    // or recording stops it, then fails: its staging folder is kept and nothing is published.
+                    Exception stopped = null;
+                    try
+                    {
+                        Require(!EditorApplication.isPlayingOrWillChangePlaymode && !AnimationMode.InAnimationMode(),
+                            "Exit Play Mode and animation preview, then try again.");
+                        Require(variant.PipelineReady(), variant.PipelineMessage);
+                        CheckOwned(generated);
+                        Folder(Assets);
+                        WriteMarker(generated, run.Stamp);
+                        Progress("Preparing fixtures", .05f);
+                        var build = PrepareInFixtureScene(report, run.Stamp, variant.Prepare, ref preserveStaging);
+                        BuildAndCapture(build, report, staging, run, target, variant.Record, Log, variant.BodyOnly);
+                    }
+                    catch (Exception error) when (variant.Finish != null)
+                    {
+                        stopped = error;
+                        preserveStaging = true;
+                    }
+                    // A last step (round 12's inventory, authored.json and round.json) that fails fails the run
+                    // after run.json is written: the staging folder is kept, and nothing is published.
+                    string lastStep = null;
+                    try { finished = variant.Finish?.Invoke(report, staging, run); }
+                    catch (Exception error)
+                    {
+                        Log("ERROR in the last step: " + error.Message);
+                        lastStep = error.Message;
+                        preserveStaging = true;
+                    }
                     failures = report.Write(staging, projectPath, run);
+                    if (stopped != null)
+                        throw new InvalidOperationException(stopped.Message + (lastStep == null ? "" : " The last step failed too: "
+                            + lastStep) + " Nothing was published.", stopped);
+                    if (lastStep != null)
+                        throw new InvalidOperationException("The last step failed: " + lastStep + " Nothing was published.");
+                    if (failures.Length > 0 && Directory.Exists(output))
+                    {
+                        destination = output + "-partial-" + shortId;
+                        shown = relative + "-partial-" + shortId;
+                        Log("This run has failures, so it is published to " + shown + " and the earlier output stays.");
+                    }
                     // Only a recorded run is a round: a build-only run's replays are skipped, which completion refuses.
                     if (run.variant == "builtin" && variant.Record) WriteRound(staging, run.run_id);
                     Log(failures.Length == 0 ? "Finished." : "Finished with fixture errors: " + string.Join(", ", failures));
@@ -263,10 +307,20 @@ static partial class UnityrsFixtureBuilder
             }
             Progress("Publishing results", .98f);
             publishing = true;
-            Publish(staging, output);
+            published = Publish(staging, destination, replace: failures.Length == 0);
             publishing = false;
+            shown = Path.Combine(Path.GetDirectoryName(relative), Path.GetFileName(published));
+            // The log's last line: where the run is now, which paths above under the staging folder have moved to.
+            try
+            {
+                File.AppendAllText(Path.Combine(published, LogFile), "Published to " + shown + ": paths above under "
+                    + Path.GetFileName(staging) + " are under it now.\n");
+            }
+            catch (IOException logError) { Debug.LogException(logError); }
+            catch (UnauthorizedAccessException logError) { Debug.LogException(logError); }
             EditorUtility.ClearProgressBar();
-            string location = "Unity " + version + " / " + target + "\n\nOutput in your project folder:\n" + relative;
+            string location = "Unity " + version + " / " + target + "\n\nOutput in your project folder:\n" + shown
+                + (finished == null ? "" : "\n\n" + finished);
             // "Ready" for a recorded Built-in run and for the URP and Android runs, whose bundles are
             // the run (they record nothing by design). Only the Built-in build-only menu item's
             // output has nothing to send: it records nothing a Built-in run must.
@@ -289,6 +343,15 @@ static partial class UnityrsFixtureBuilder
             EditorUtility.ClearProgressBar();
             Debug.LogException(error);
             string diagnostic = "See the Unity Console.";
+            if (published != null)
+            {
+                diagnostic = "The run was published to this folder in your project:\n" + shown;
+                try { File.AppendAllText(Path.Combine(published, LogFile), "ERROR " + error.Message + "\n" + diagnostic + "\n"); }
+                catch (IOException logError) { Debug.LogException(logError); }
+                catch (UnauthorizedAccessException logError) { Debug.LogException(logError); }
+                EditorUtility.DisplayDialog("unityrs fixtures published", error.Message + "\n\n" + diagnostic, "OK");
+                return;
+            }
             if (publishing || preserveStaging)
             {
                 diagnostic = publishing
@@ -439,9 +502,11 @@ static partial class UnityrsFixtureBuilder
             StringComparer.Ordinal);
 
     static void BuildAndCapture(Build build, RunReport report, string staging, RunIdentity run, BuildTarget target,
-        bool record, Action<string> log)
+        bool record, Action<string> log, bool bodyOnly = false)
     {
-        Require(build.Bundles.Count > 0, "No fixtures could be prepared. See the log and Console.");
+        // A body-only run (round 12) builds its body bundles and never the main ones.
+        Require(bodyOnly ? build.Bundles.Count == 0 && build.BodyBundles.Count > 0 : build.Bundles.Count > 0,
+            "No fixtures could be prepared. See the log and Console.");
         string bundles = Path.Combine(staging, "bundles");
         string replays = Path.Combine(staging, "replays");
         Progress("Building asset bundles", .5f);
@@ -450,11 +515,11 @@ static partial class UnityrsFixtureBuilder
         StampBundleAssets(build.BodyBundles, run.Stamp);
         AssetDatabase.SaveAssets();
         Directory.CreateDirectory(bundles);
-        var manifest = BuildPipeline.BuildAssetBundles(bundles, build.Bundles.ToArray(),
+        var manifest = bodyOnly ? null : BuildPipeline.BuildAssetBundles(bundles, build.Bundles.ToArray(),
             BuildAssetBundleOptions.ChunkBasedCompression | BuildAssetBundleOptions.StrictMode, target);
-        Require(manifest != null, "Unity could not build the fixture bundles. See the log and Console.");
+        Require(bodyOnly || manifest != null, "Unity could not build the fixture bundles. See the log and Console.");
 
-        var main = BundleContents(manifest);
+        var main = bodyOnly ? new Dictionary<string, string[]>(StringComparer.Ordinal) : BundleContents(manifest);
         var built = new HashSet<string>(main.Keys, StringComparer.Ordinal);
         // Unity writes an extra manifest bundle and text manifests. The handoff contains the stamped case bundles.
         foreach (string path in Directory.EnumerateFiles(bundles))
@@ -530,8 +595,26 @@ static partial class UnityrsFixtureBuilder
         }
     }
 
-    static void Publish(string staging, string output)
+    // The folder the run is published to. Only a run without failures may replace an earlier output. One with
+    // failures never moves anything aside or deletes: Directory.Move refuses a destination that exists, so a name
+    // taken by the time of the move gives way to the next free one (<output>-2, -3, ...).
+    static string Publish(string staging, string output, bool replace)
     {
+        if (!replace)
+        {
+            for (int n = 1; n <= 100; n++)
+            {
+                string fresh = n == 1 ? output : output + "-" + n;
+                if (Directory.Exists(fresh)) continue;
+                try
+                {
+                    MoveWithRetry(staging, fresh);
+                    return fresh;
+                }
+                catch (IOException) when (Directory.Exists(fresh) && Directory.Exists(staging)) { }
+            }
+            throw new IOException("No free folder name to publish " + Path.GetFileName(output) + " under; the run stays staged.");
+        }
         CheckOwned(output);
         string prior = staging + ".previous";
         if (Directory.Exists(output)) MoveWithRetry(output, prior);
@@ -555,6 +638,7 @@ static partial class UnityrsFixtureBuilder
             catch (IOException error) { Debug.LogException(error); }
             catch (UnauthorizedAccessException error) { Debug.LogException(error); }
         }
+        return output;
     }
 
     static void MoveWithRetry(string source, string destination)
