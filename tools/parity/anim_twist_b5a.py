@@ -16,8 +16,8 @@ writer on a human bone, locomotion (a mapped motion slot, a root motion bone, a 
 curves), IK goals, translation DOFs, an additive reference pose, body slots, then B5a's scope above. Its hierarchy
 check comes first and is not modelled: every round 11 rig is one B4 admits. `pinned_refusals` predicts each from
 round 11's builder tables before any data (the case's root placement and rig feature, its variant's motion and
-goal curves, the RootT and RootQ curves every full-body clip has); `runtime_refusal` computes it from the decoded
-Avatar and built clip; the verdict requires the two equal.
+goal curves, the RootT and RootQ curves every full-body clip has); the verdict requires the runtime's observed
+reason equal to it.
 """
 
 import sys
@@ -29,8 +29,6 @@ import anim_replay as replay  # noqa: E402
 
 # humanoid::LIMB_TWIST_MUSCLES: the ten limb-twist muscles' HumanTrait ordinals.
 LIMB_TWIST_ORDINALS = (23, 25, 27, 31, 33, 35, 41, 43, 50, 52)
-# humanoid::DofKind's built layout: [first, end) DOFs of each kind.
-DOF_KINDS = (("motion", 0, 7), ("body", 7, 14), ("goal", 14, 42), ("muscle", 42, 137), ("translation", 137, 10 ** 9))
 
 
 def twist_free():
@@ -101,41 +99,6 @@ def refusal(human, moved):
             return f"unsupported_humanoid_twist({field})"
     twisted = sorted(set(moved) & set(LIMB_TWIST_ORDINALS))
     return f"unsupported_humanoid_limb_twist({twisted[0]})" if twisted else None
-
-
-def runtime_refusal(avatar, clip, identity_root):
-    """The runtime's first refusal of a built humanoid `clip` on `avatar` (both as `unityrs show` decodes them),
-    with the Animator node and its ancestors at the identity or not (`identity_root`, from the capture's recorded
-    placement, anim_muscle_confirm.placement), in humanoid_refusal's order; None past the limb-twist check."""
-    from anim_humanoid_qualify import REQUIRED_BONES, bone_node, data, float_count
-
-    human = data(avatar["m_Avatar"]["m_Human"])
-    missing = [bone for bone in REQUIRED_BONES if bone_node(human, bone) is None]
-    if missing:
-        return f"missing_human_bone({missing[0]})"
-    if not identity_root:
-        return "unsupported_animator_root"
-    skeleton = human["m_Skeleton"].get("data", human["m_Skeleton"])
-    ids = set(skeleton["m_ID"])
-    bindings = clip.get("m_ClipBindingConstant", {}).get("genericBindings", [])
-    writers = [k for k, row in enumerate(bindings) if row.get("typeID") == 4 and row.get("path") not in (0, None)
-               and row["path"] in ids]
-    if writers:
-        return f"conflicting_humanoid_writer({writers[0]})"
-    index = clip["m_MuscleClip"]["m_IndexArray"]
-    mapped = {kind for kind, first, end in DOF_KINDS for dof in range(first, min(end, len(index))) if index[dof] >= 0}
-    if "motion" in mapped or avatar["m_Avatar"].get("m_RootMotionBoneIndex", -1) >= 0 \
-            or clip.get("m_HasGenericRootTransform") or clip.get("m_HasMotionFloatCurves"):
-        return "unsupported_locomotion"
-    if "goal" in mapped:
-        return "unsupported_humanoid_ik"
-    if "translation" in mapped or human.get("m_HasTDoF"):
-        return "unsupported_translation_dof"
-    if float_count(clip["m_MuscleClip"].get("m_ValueArrayReferencePose", [])):
-        return "unsupported_additive_pose"
-    if "body" in mapped:
-        return "unsupported_body_motion(body_slots)"
-    return refusal(human, {dof - 42 for dof in range(42, min(137, len(index))) if index[dof] >= 0})
 
 
 def pinned_refusals():

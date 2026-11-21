@@ -480,19 +480,49 @@ def check_inventory(folder, replay):
 def complete_round(folder, unityrs, inspect_dir, replay, intake_digest=None):
     """Complete a round 11 run: its inventory, then every check `complete` runs, with round 11's tables. Round 12
     reuses some round 11 cases as sealed evidence (anim_fixture_round12.round11_cases: the finger and face sweeps
-    and B5a's refusal clips); they stay unread and undecoded, listed as held, unless `intake_digest` names a round
-    12 intake whose claim exists (anim_twist_seal.require_claim). Returns (count, uncovered, sealed, held)."""
-    import anim_replay_complete as complete
+    and B5a's refusal clips); they stay unread and undecoded, listed as held, unless `intake_digest` names the round
+    12 intake whose claim exists and binds this run (`_claimed_copy`): completion then decodes a private copy of
+    the run whose every bound file is the bytes that intake hashed. Returns (count, uncovered, sealed, held)."""
     from anim_fixture_round12 import round11_cases
 
     check_inventory(folder, replay)
-    if intake_digest is not None:
-        from anim_twist_seal import require_claim
-
-        require_claim(intake_digest)
-        held = set()
-    else:
+    if intake_digest is None:
         held = {case for case, partition in round11_cases().items() if partition != "exploration"}
+        return _complete_held(folder, unityrs, inspect_dir, replay, held)
+    import scratch
+
+    with scratch.folder("unityrs-round11-") as private:
+        copy = _claimed_copy(folder, intake_digest, private)
+        return _complete_held(copy, unityrs, inspect_dir, replay, set())
+
+
+def _claimed_copy(folder, intake_digest, private):
+    """A private copy of round 11 run `folder` under `private`, refused unless the claim of `intake_digest` holds a
+    record (anim_twist_seal.claimed_record) binding this run, by its run id, and every file that record bound is
+    byte for byte the copy's."""
+    import hashlib
+    import shutil
+
+    import anim_replay as replay
+    from anim_fixture_round12 import editor_of_run
+    from anim_twist_seal import claimed_record
+
+    bound = claimed_record(intake_digest)["round11"]
+    _, run_id, _ = editor_of_run(folder)
+    runs = [row for row in bound.values() if row.get("run_id") == run_id]
+    replay.require(len(runs) == 1, f"the claim of intake {intake_digest[:12]} does not bind round 11 run "
+                                   f"{Path(folder).name}")
+    copy = Path(shutil.copytree(folder, Path(private) / Path(folder).name, symlinks=True))
+    changed = sorted(name for name, digest in runs[0]["files"].items()
+                     if not (copy / name).is_file() or (copy / name).is_symlink()
+                     or hashlib.sha256((copy / name).read_bytes()).hexdigest() != digest)
+    replay.require(not changed, f"{Path(folder).name}'s files differ from the claimed intake's: {changed[:3]}")
+    return copy
+
+
+def _complete_held(folder, unityrs, inspect_dir, replay, held):
+    import anim_replay_complete as complete
+
     base, skipped = complete.recorded_paths, []
 
     def gated(*args):
@@ -514,6 +544,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("mode", choices=("complete",))
     parser.add_argument("folder", type=Path)
+    parser.add_argument("--intake-digest", help="a claimed round 12 intake binding this run, to open its sealed "
+                                                "evidence too")
     inspection = parser.add_mutually_exclusive_group()
     inspection.add_argument("--unityrs", help="unityrs executable (default: unityrs on PATH)")
     inspection.add_argument("--inspect-dir", type=Path, help="saved inspect and show JSON")
@@ -522,7 +554,8 @@ def main():
 
     executable = str(Path(args.unityrs).resolve()) if args.unityrs else "unityrs"
     try:
-        count, uncovered, sealed, held = complete_round(args.folder, executable, args.inspect_dir, anim_replay)
+        count, uncovered, sealed, held = complete_round(args.folder, executable, args.inspect_dir, anim_replay,
+                                                        args.intake_digest)
     except (ValueError, OSError, OverflowError) as exc:
         parser.exit(1, f"anim_fixture_round11: {exc}\n")
     print(f"Completed and validated {count} replay(s) of round {ROUND}.")

@@ -134,6 +134,13 @@ def readers(clip=None):
     return avatar_of, clip_of
 
 
+def claimed(record, ledger=None):
+    """Claims the intake whose record is `record`: its digest."""
+    digest = round12.sha256(round12.canonical_json(record))
+    seal.claim(digest, record, ledger)
+    return digest
+
+
 class Runs:
     """Both Editors' round 12 and round 11 runs, built once per class and copied for each test. Unless REAL, their
     authored.json is STUB, checked by `stub_check`, and clip checks are stubbed."""
@@ -286,7 +293,7 @@ class AuthoredIntakeTests(Runs, unittest.TestCase):
     REAL = True
 
     def test_a_wrong_twist_only_curve_is_twists_alone(self):
-        def broken(case):
+        def broken(case, gone=False):
             r12, r11_ = self.runs()
             path = r12["2022"] / "authored.json"
             value = json.loads(path.read_text(encoding="utf-8"))
@@ -294,11 +301,17 @@ class AuthoredIntakeTests(Runs, unittest.TestCase):
             curve = next(b for b in clip["bindings"] if b["values"])
             curve["values"][1] = r12tables.bits(.4375)
             write_json(path, value)
+            if gone:
+                (r12["2022"] / "replays" / "body" / f"{case}.pending.json").unlink()
             return self.intake(r12, r11_)
-        lacking = broken(TWIST_CLIP)[1]["round12"]["2022"]["twist_only_lacking"]
-        self.assertLessEqual({TWIST_CLIP, TWIST_CLIP + "-offset"}, set(lacking))
+        record = broken(TWIST_CLIP)[1]["round12"]["2022"]
+        self.assertLessEqual({TWIST_CLIP, TWIST_CLIP + "-offset"}, set(record["twist_only_misauthored"]))
+        self.assertEqual(record["twist_only_lacking"], [])
         with self.assertRaisesRegex(ValueError, "authored.json"):
             broken(TWIN)
+        # The case is still recorded and matched in both manifests: its file is required, authored wrongly or not.
+        with self.assertRaisesRegex(ValueError, "recorded cases lack"):
+            broken(TWIST_CLIP, gone=True)
 
 
 class ViewTests(Runs, unittest.TestCase):
@@ -314,12 +327,13 @@ class ViewTests(Runs, unittest.TestCase):
         self.assertFalse(any(TWIN in path for path in view.read))
         self.assertEqual((view.allows(EXPLORATION), view.allows(TWIN), view.allows("body-probes-face")),
                          (True, False, False))
-        ledger, digest = scratch.for_case(self), "f" * 64
+        ledger, record = scratch.for_case(self), dict(intake="f")
+        digest = round12.sha256(round12.canonical_json(record))
         with self.assertRaisesRegex(ValueError, "needs the intake's claim"):
             round12.round12_view(r12["2022"], round12.PARTITIONS)
         with self.assertRaisesRegex(ValueError, "opens only after the intake's claim"):
             round12.round12_view(r12["2022"], round12.PARTITIONS, lambda: seal.require_claim(digest, ledger))
-        seal.claim(digest, ledger)
+        claimed(record, ledger)
         sealed = round12.round12_view(r12["2022"], round12.PARTITIONS, lambda: seal.require_claim(digest, ledger))
         self.assertEqual(sorted(round12.complete(sealed, readers(), [TWIN, TWIST_CLIP])), [TWIN, TWIST_CLIP])
         view11 = round12.round11_view(r11_["2022"])
@@ -332,9 +346,10 @@ class ViewTests(Runs, unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "is not a run file"):
             view.run_file("../round.json")
 
-    def test_selection_opens_once_after_an_ambiguity(self):
+    def test_selection_opens_once_after_this_intakes_ambiguity_and_before_its_claim(self):
         r12, _ = self.runs()
-        ledger, digest = scratch.for_case(self), "e" * 64
+        ledger, record = scratch.for_case(self), dict(intake="e")
+        digest = round12.sha256(round12.canonical_json(record))
 
         def selected():
             return seal.require_selection(digest, ledger)
@@ -342,15 +357,36 @@ class ViewTests(Runs, unittest.TestCase):
             round12.round12_view(r12["2022"], ("exploration", "selection"))
         with self.assertRaisesRegex(ValueError, "no selection marker"):
             round12.round12_view(r12["2022"], ("exploration", "selection"), selection=selected)
-        with self.assertRaisesRegex(ValueError, "ambiguity"):
-            seal.open_selection(digest, [], ledger)
-        seal.open_selection(digest, [["cell", "t5"]], ledger)
+        with self.assertRaisesRegex(ValueError, "after this intake's exploration is recorded"):
+            seal.open_selection(digest, ledger)
+        # Another intake's ambiguity opens nothing here; nor does an exploration that resolved everything.
+        seal.record_exploration("0" * 64, [["cell", "t5"]], ledger)
+        with self.assertRaisesRegex(ValueError, "after this intake's exploration is recorded"):
+            seal.open_selection(digest, ledger)
+        resolved = scratch.for_case(self) / "resolved"
+        seal.record_exploration(digest, [], resolved)
+        with self.assertRaisesRegex(ValueError, "on an ambiguity"):
+            seal.open_selection(digest, resolved)
+        seal.record_exploration(digest, [["cell", "t5"]], ledger)
+        with self.assertRaisesRegex(ValueError, "recorded once"):
+            seal.record_exploration(digest, [["cell", "t1"]], ledger)
+        seal.open_selection(digest, ledger)
         with self.assertRaisesRegex(ValueError, "opens once"):
-            seal.open_selection(digest, [["cell", "t5"]], ledger)
+            seal.open_selection(digest, ledger)
         view = round12.round12_view(r12["2022"], ("exploration", "selection"), selection=selected)
         self.assertEqual(sorted(round12.complete(view, readers(), [SELECTION])), [SELECTION])
         with self.assertRaisesRegex(ValueError, "sealed"):
             view.capture(TWIN)
+        # After the claim, the transition is closed: selection opens only through the claim's sealed views.
+        claimed(record, ledger)
+        with self.assertRaisesRegex(ValueError, "after the claim"):
+            round12.round12_view(r12["2022"], ("exploration", "selection"), selection=selected)
+        late = scratch.for_case(self) / "late"
+        claimed(record, late)
+        with self.assertRaisesRegex(ValueError, "before the intake's claim"):
+            seal.record_exploration(digest, [["cell", "t5"]], late)
+        with self.assertRaisesRegex(ValueError, "before the intake's claim"):
+            seal.open_selection(digest, late)
 
     def test_completion_checks_identity_bundle_and_times(self):
         def broken(change, pattern, case=EXPLORATION):
@@ -360,8 +396,8 @@ class ViewTests(Runs, unittest.TestCase):
             change(doc, r12["2022"])
             write_json(path, doc)
             ledger = scratch.for_case(self)
-            seal.claim("d" * 64, ledger)
-            view = round12.round12_view(r12["2022"], round12.PARTITIONS, lambda: seal.require_claim("d" * 64, ledger))
+            digest = claimed(dict(intake="d"), ledger)
+            view = round12.round12_view(r12["2022"], round12.PARTITIONS, lambda: seal.require_claim(digest, ledger))
             with self.subTest(pattern=pattern), self.assertRaisesRegex(ValueError, pattern):
                 round12.complete(view, readers(), [case])
         sibling = "assets/unityrsfixtures/body-clips-compact-scoped-twin/body-clip-compact-scoped-twin-bake-o1-y1-xz1.anim"
@@ -403,6 +439,55 @@ class ViewTests(Runs, unittest.TestCase):
         round12.complete(changed, readers(), [EXPLORATION])
         with self.assertRaisesRegex(ValueError, "read bytes the intake never bound"):
             round12.consumed(record, [("2022", "round12", changed)])
+
+
+class FixtureTests(unittest.TestCase):
+    def test_every_clip_case_is_its_tables_variant_and_placement(self):
+        found = {name: (variant, root) for name, _, _, variant, root in r12tables.full_clips()}
+        cases = [row for row in rows().values() if row["family"] in ("twist-clip", "twin")]
+        self.assertEqual(sorted(row["name"] for row in cases), sorted(found))
+        self.assertEqual({root for _, root in found.values()}, {"identity", "offset"})
+        for row in cases:
+            variant, root = found[row["name"]]
+            tag = "twist" if row["family"] == "twist-clip" else "twin"
+            fixture = round12.fixture_of(row)
+            with self.subTest(case=row["name"]):
+                self.assertEqual((fixture.prefab, fixture.clip, fixture.bundle, fixture.playback),
+                                 (root, f"body-clip-{row['rig']}-{tag}-{variant}", round12.bundle_of(row), "animator"))
+                self.assertTrue(round12.muscle_curves(row["name"], row))
+        # A variant whose own name ends in a placement word: the identity clip is not an offset one.
+        for case, prefab, clip in (
+                ("body-clip-compact-scoped-twin-orientation-offset", "identity",
+                 "body-clip-compact-scoped-twin-orientation-offset"),
+                ("body-clip-compact-scoped-twin-orientation-offset-offset", "offset",
+                 "body-clip-compact-scoped-twin-orientation-offset")):
+            fixture = round12.fixture_of(rows()[case])
+            self.assertEqual((fixture.prefab, fixture.clip), (prefab, clip))
+
+    def test_the_prefab_avatar_and_clip_resolve_in_the_bundle(self):
+        resolved = []
+
+        class Bundle:
+            def __init__(self, path, digest, *_):
+                self.path = path
+
+            def asset(self, name, class_id):
+                resolved.append((name, class_id))
+                return name
+
+            def value(self, key):
+                return {"asset": key}
+        folder = make_round12(scratch.for_case(self) / "run", "2022", STUB, [EXPLORATION])
+        view = round12.round12_view(folder)
+        doc = view.capture(EXPLORATION)
+        with mock.patch.object(complete, "BundleView", Bundle), \
+                mock.patch.object(complete, "read_manifest", return_value=(None, {})) as manifest:
+            avatar_of, clip_of = round12.readers("unityrs")
+            avatar_of(view, EXPLORATION, doc)
+            clip_of(view, EXPLORATION, doc)
+        self.assertEqual(manifest.call_args.args[0], view.private())
+        spec = doc["spec"]
+        self.assertEqual(resolved, [(spec["prefab_asset"], 1), (spec["avatar_asset"], 90), (spec["clip_asset"], 74)])
 
 
 class ClipTests(unittest.TestCase):
@@ -454,32 +539,55 @@ class ClipTests(unittest.TestCase):
 
 
 class Round11CompletionTests(unittest.TestCase):
-    def test_round_12s_sealed_evidence_is_never_read_by_round_11s_completion(self):
-        folder = scratch.for_case(self)
+    def test_round_12s_sealed_evidence_opens_only_through_its_own_intakes_claim(self):
+        folder = scratch.for_case(self) / "run"
         body = folder / "replays" / "body"
         names = ("body-probes-face", "body-probes-fingers", sorted(round12.round11_cases())[0],
                  allowlisted("tall"), "body-clip-tall-scoped-level-offset")
-        paths = sorted(body / f"{name}.pending.json" for name in names)
+        for name in names:
+            write_json(body / f"{name}.pending.json", dict(case=name))
+        write_json(folder / "run.json", dict(run=dict(run_id="c" * 32, editor_version=VERSIONS["2022"])))
         seen = []
 
+        def recorded_paths(folder_, *_):
+            return sorted(Path(folder_) / "replays" / "body" / f"{name}.pending.json" for name in names), False, {}, []
+
         def complete_folder(folder_, unityrs, inspect_dir, replay_):
-            seen.append(complete.recorded_paths(folder_, replay_, {}, {})[0])
-            return len(seen[-1]), [], []
-        ledger = scratch.for_case(self)
+            paths = complete.recorded_paths(folder_, replay_, {}, {})[0]
+            seen.append((Path(folder_), {p.name: p.read_bytes() for p in paths}))
+            return len(paths), [], []
+
+        def bound(run_id, *files):
+            return dict(round11={"2022": dict(run_id=run_id, files={name: hashlib.sha256(
+                (folder / name).read_bytes()).hexdigest() for name in ("run.json", *files)})})
+        face = "replays/body/body-probes-face.pending.json"
+        ledger = scratch.for_case(self) / "ledger"
         with mock.patch.object(r11, "check_inventory"), mock.patch.object(complete, "complete_folder", complete_folder), \
-                mock.patch.object(complete, "recorded_paths", lambda *_: (paths, False, {}, [])), \
-                mock.patch.object(seal, "LEDGER_DIR", ledger):
+                mock.patch.object(complete, "recorded_paths", recorded_paths), mock.patch.object(seal, "LEDGER_DIR", ledger):
             count, _, _, held = r11.complete_round(folder, "unityrs", None, replay)
             sealed = {n for n, p in round12.round11_cases().items() if p == "confirmation"}
             self.assertEqual(held, sorted(n for n in names if n in sealed))
             self.assertEqual(count, len(names) - len(held))
-            self.assertFalse({p.name.removesuffix(".pending.json") for p in seen[-1]} & sealed)
-            self.assertEqual(complete.recorded_paths.__name__, "<lambda>")
+            self.assertFalse({name.removesuffix(".pending.json") for name in seen[-1][1]} & sealed)
+            self.assertIs(complete.recorded_paths, recorded_paths)
+            record = bound("c" * 32, face)
+            digest = round12.sha256(round12.canonical_json(record))
             with self.assertRaisesRegex(ValueError, "opens only after the intake's claim"):
-                r11.complete_round(folder, "unityrs", None, replay, "c" * 64)
-            seal.claim("c" * 64)
-            self.assertEqual(r11.complete_round(folder, "unityrs", None, replay, "c" * 64)[3], [])
-            self.assertEqual(seen[-1], paths)
+                r11.complete_round(folder, "unityrs", None, replay, digest)
+            # Another intake's claim, binding another run, opens nothing here.
+            other = claimed(bound("e" * 32, face), ledger)
+            with self.assertRaisesRegex(ValueError, "does not bind round 11 run"):
+                r11.complete_round(folder, "unityrs", None, replay, other)
+            claimed(record, ledger)
+            (folder / face).write_bytes(b"changed after the intake")
+            with self.assertRaisesRegex(ValueError, "differ from the claimed intake's"):
+                r11.complete_round(folder, "unityrs", None, replay, digest)
+            write_json(folder / face, dict(case="body-probes-face"))
+            self.assertEqual(r11.complete_round(folder, "unityrs", None, replay, digest)[3], [])
+            private, read = seen[-1]
+            self.assertNotEqual(private, folder)
+            self.assertEqual(sorted(read), sorted(f"{name}.pending.json" for name in names))
+            self.assertEqual(read["body-probes-face.pending.json"], (folder / face).read_bytes())
 
 
 if __name__ == "__main__":

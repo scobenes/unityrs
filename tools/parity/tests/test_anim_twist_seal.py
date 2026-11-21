@@ -21,7 +21,8 @@ import anim_twist_b5a as b5a  # noqa: E402
 import anim_twist_model as model  # noqa: E402
 import anim_twist_seal as seal  # noqa: E402
 import scratch  # noqa: E402
-from test_anim_fixture_round12 import EXPLORATION, TWIN, TWIST_CLIP, VERSIONS, Runs, readers, rows, write_json  # noqa: E402
+from test_anim_fixture_round12 import (EXPLORATION, TWIN, TWIST_CLIP, VERSIONS, Runs, claimed, readers, rows,  # noqa: E402
+                                      write_json)
 from test_anim_twist_b5a import observation  # noqa: E402
 
 CANDIDATE = dict(limb=list(model.LIMBS[0]), foot=list(model.FEET[0]))
@@ -58,36 +59,40 @@ def hook_top(case):
 class ClaimTests(unittest.TestCase):
     def test_a_second_claim_is_refused(self):
         folder = scratch.for_case(self)
-        digest, other = "a" * 64, "b" * 64
+        record, other = dict(intake="a"), "b" * 64
+        digest = round12.sha256(round12.canonical_json(record))
         with self.assertRaisesRegex(ValueError, "opens only after"):
             seal.require_claim(digest, folder)
-        seal.claim(digest, folder)
+        with self.assertRaisesRegex(ValueError, "not its intake's"):
+            seal.claim(other, record, folder)
+        seal.claim(digest, record, folder)
         seal.require_claim(digest, folder)
         self.assertEqual(json.loads((folder / f"{digest}.claim").read_text())["state"], "claimed")
         with self.assertRaisesRegex(ValueError, "already evaluated"):
-            seal.claim(digest, folder)
+            seal.claim(digest, record, folder)
         seal.mark(digest, "b5a", folder)
-        seal.require_claim(digest, folder)
+        self.assertEqual(seal.claimed_record(digest, folder), record)
         # The claim is the intake's own: another intake's is separate.
         with self.assertRaisesRegex(ValueError, "opens only after"):
             seal.require_claim(other, folder)
         for bad in ("a" * 63, None, "../" + "a" * 61):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
-                seal.claim(bad, folder)
+                seal.claim(bad, record, folder)
 
     def test_a_claim_half_written_by_a_crash_refuses_and_is_never_reclaimed(self):
         folder = scratch.for_case(self)
-        digest = "c" * 64
+        record = dict(intake="c")
+        digest = round12.sha256(round12.canonical_json(record))
 
         def dies(handle, data):
             raise KeyboardInterrupt("the process dies mid-claim")
         with mock.patch.object(seal.os, "write", dies), self.assertRaises(KeyboardInterrupt):
-            seal.claim(digest, folder)
+            seal.claim(digest, record, folder)
         self.assertTrue((folder / f"{digest}.claim").is_file())
         with self.assertRaisesRegex(ValueError, "half-written"):
             seal.require_claim(digest, folder)
         with self.assertRaisesRegex(ValueError, "half-written"):
-            seal.claim(digest, folder)
+            seal.claim(digest, record, folder)
         with self.assertRaisesRegex(ValueError, "half-written"):
             seal.mark(digest, "failed", folder)
         # A marker holding another intake's state, or a truncated one, is half-written too.
@@ -157,7 +162,7 @@ class FreezeTests(unittest.TestCase):
         self.assertEqual(seal.load_hook(freeze, "observe_b5a", top).__name__, "observe")
         self.assertIsNone(seal.load_hook(dict(hooks=dict(twist_rule=None), code=code), "twist_rule", top))
         # No callable is taken from a caller: only names, loaded from the pinned module.
-        self.assertFalse({"observe_b5a", "twist_rule"} & set(inspect.signature(seal.evaluate_bound).parameters))
+        self.assertFalse({"observe_b5a", "twist_rule"} & set(inspect.signature(seal._evaluate).parameters))
         for hooks, pattern in ((dict(observe_b5a="anim_twist_b5a:b5a_failures"), "not in a pinned module"),
                                (dict(observe_b5a=print), "not a pinned module:function")):
             with self.subTest(pattern=pattern), self.assertRaisesRegex(ValueError, pattern):
@@ -223,7 +228,7 @@ class EvaluateTests(Runs, unittest.TestCase):
         global CURRENT
         super().setUp()
         self.r12, self.r11 = self.runs()
-        self.digest, _ = self.intake(self.r12, self.r11)
+        self.digest, self.record = self.intake(self.r12, self.r11)
         self.ledger = scratch.for_case(self)
         self.top, self.code = hook_top(self)
         rows_ = {(e, TWIN, 7, sid) for e in VERSIONS for sid in rows()[TWIN]["times"][:1]}
@@ -246,8 +251,8 @@ class EvaluateTests(Runs, unittest.TestCase):
         def never(*_):
             raise AssertionError("the twist rule ran")
         self.rule, self.observer = rule or never, observe or self.observe
-        return seal.evaluate_bound(freeze, list(self.r12.values()), list(self.r11.values()), "unityrs",
-                                   self.ledger, self.expected, self.top)
+        return seal._evaluate(freeze, list(self.r12.values()), list(self.r11.values()), "unityrs",
+                              self.ledger, self.expected, self.top)
 
     def events(self):
         return [row["event"] for row in ledger(self.ledger)]
@@ -272,6 +277,36 @@ class EvaluateTests(Runs, unittest.TestCase):
         self.assertTrue(report["b5a"]["passed"])
         self.assertEqual(ledger(self.ledger)[1]["passed"], True)
         self.assertEqual(json.loads((self.ledger / f"{self.digest}.claim").read_text())["state"], "evaluated")
+
+    def test_the_twist_rule_loads_only_after_b5a_is_written(self):
+        # A twist module that fails to import: on a `none` freeze it is never loaded; otherwise its failure, after
+        # B5a's verdict is written, refuses twist alone.
+        name = "tools/parity/round12_test_twist.py"
+        for candidate in ("none", CANDIDATE):
+            self.setUp()
+            broken = self.top / name
+            broken.write_text("raise ImportError('the twist module is broken')\n", encoding="utf-8")
+            self.code["files"].append(name)
+            self.code["sha256"][name] = hashlib.sha256(broken.read_bytes()).hexdigest()
+            freeze = self.freeze(self.digest, candidate)
+            freeze["hooks"] = dict(HOOKS, twist_rule="round12_test_twist:rule")
+            report = self.evaluate(freeze)
+            with self.subTest(candidate=candidate):
+                self.assertEqual(report["b5a"], dict(passed=True, failures=[]))
+                self.assertEqual(report["twist"]["admitted"], "none")
+                self.assertIn("the freeze is none" if candidate == "none" else "the twist module is broken",
+                              report["twist"]["failures"][0])
+                self.assertEqual(self.events(), ["claimed", "b5a", "evaluated"])
+
+    def test_no_public_path_spends_the_claim_unbound(self):
+        # The evaluation's only public entry binds the committed freeze and executable first: given another
+        # freeze, it refuses before any claim.
+        self.assertFalse(hasattr(seal, "evaluate_bound"))
+        path = self.top / "freeze.json"
+        path.write_text(json.dumps(self.freeze(self.digest)), encoding="utf-8")
+        with mock.patch.object(seal, "LEDGER_DIR", self.ledger), self.assertRaisesRegex(ValueError, "canonical freeze"):
+            seal.evaluate(list(self.r12.values()), list(self.r11.values()), "unityrs", path)
+        self.assertFalse(list(Path(self.ledger).iterdir()))
 
     def test_any_sealed_twist_failure_refuses_all_twist(self):
         def raises(*_):
@@ -355,7 +390,7 @@ class EvaluateTests(Runs, unittest.TestCase):
     def test_the_sealed_views_open_only_after_the_claim(self):
         with self.assertRaisesRegex(ValueError, "opens only after the intake's claim"):
             seal.sealed_views(self.r12, {}, self.digest, self.ledger)
-        seal.claim(self.digest, self.ledger)
+        seal.claim(self.digest, self.record, self.ledger)
         views = seal.sealed_views(self.r12, {}, self.digest, self.ledger)
         self.assertEqual(sorted(round12.complete(views[0][2], readers(), [TWIN, EXPLORATION])),
                          sorted([TWIN, EXPLORATION]))

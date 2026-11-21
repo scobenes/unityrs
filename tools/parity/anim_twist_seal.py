@@ -27,12 +27,15 @@ and the digest of its expected rows, recomputed and compared at evaluation.
 one commit after the pinned code commit, unchanged since; no pinned file changed since the code commit, at HEAD or
 in the work tree; the same pinned files and sha256s; the same executable (anim_body_seal's git binding).
 
-**Selection** (`open_selection`): before the claim, the selection partition opens through a one-time transition,
-an exclusive create of `<intake digest>.selection` recording the ambiguity exploration left (unresolved cells or
-pairs); none refuses it, and a second refuses.
+**Selection** (`open_selection`): exploration's result for an intake is recorded once, before its claim
+(`record_exploration`, `<intake digest>.exploration`: the cells or pairs it left unresolved). Before the claim, the
+selection partition opens through a one-time transition, an exclusive create of `<intake digest>.selection`, only
+when that recorded exploration left an ambiguity; a second refuses, and so does any after the claim.
 
 **Claim** (`claim`): one exclusive create (O_CREAT | O_EXCL) of `<intake digest>.claim` in LEDGER_DIR, under the
-account's home from its passwd entry, its state written in it and fsynced; an existing marker refuses. Its state
+account's home from its passwd entry, its state and the intake's record (whose canonical sha256 is the digest) written in it and
+fsynced; an existing marker refuses. Round 11's completion opens round 12's sealed evidence only through a claim
+whose record binds that run's bytes (anim_fixture_round11.complete_round). Its state
 moves by atomic replacement (claimed, b5a, evaluated or failed). A marker without a complete state, from a process
 that died while claiming, is detected and refuses everything that needs the claim, and a new claim too: it is
 inspected and removed by hand, never silently claimed again. The confirmation partition opens only through a view
@@ -40,13 +43,14 @@ made after it (`require_claim`), and every byte any view read must be one the in
 (anim_fixture_round12.consumed). After the claim any failure is a recorded failed attempt, and the claim stays
 spent.
 
-**Verdicts** (`evaluate`), per Editor, never pooled, each through its own views:
+**Verdicts** (`evaluate`, the only public path that spends the claim, after `bind`), per Editor, never pooled, each through its own views:
 - B5a first, on every path, recorded before twist begins: its twist-free rows, exactly the expected ones within
   their bounds, and the 25 refusal cases' rows each with its pinned reason (anim_twist_b5a.b5a_failures). Its
   failure, an exception or bytes the intake never bound included, is B5a's alone.
-- Twist: a freeze of `none` refuses twist everywhere and never evaluates it. Otherwise the frozen rule must pass
-  in both Editors on every playback path; any sealed failure (an exception, a twist-only case a run lacks or
-  authored wrongly, bytes the intake never bound) refuses all twist, never B5a.
+- Twist: a freeze of `none` refuses twist everywhere and never loads its rule. Otherwise the frozen rule, loaded
+  only after B5a's verdict is written, must pass
+  in both Editors on every playback path; any sealed failure (an exception, loading the rule's included, a twist-only
+  case a run lacks or authored wrongly, bytes the intake never bound) refuses all twist, never B5a.
 """
 
 import argparse
@@ -316,26 +320,53 @@ def _state(path, intake_digest):
     return content
 
 
-def open_selection(intake_digest, ambiguity, ledger_dir=None):
-    """The one-time selection transition: refused unless exploration left an ambiguity (a non-empty list of its
-    unresolved cells or pairs), and refused a second time."""
-    replay.require(isinstance(ambiguity, list) and ambiguity, "selection opens only on an ambiguity exploration left")
-    path = _marker(intake_digest, "selection", ledger_dir)
+def record_exploration(intake_digest, ambiguity, ledger_dir=None):
+    """Records, once, what exploration left of this intake unresolved (a list of its unresolved cells or pairs,
+    empty when it resolved everything), before the claim."""
+    replay.require(isinstance(ambiguity, list), "exploration's ambiguity is a list of its unresolved cells or pairs")
+    replay.require(not _marker(intake_digest, "claim", ledger_dir).exists(),
+                   "exploration is recorded before the intake's claim")
     try:
-        _create(path, dict(intake_digest=intake_digest, state="opened", ambiguity=ambiguity))
+        _create(_marker(intake_digest, "exploration", ledger_dir),
+                dict(intake_digest=intake_digest, state="opened", ambiguity=ambiguity))
+    except FileExistsError:
+        raise ValueError("exploration was already recorded for this intake: it is recorded once") from None
+
+
+def open_selection(intake_digest, ledger_dir=None):
+    """The one-time selection transition: refused unless this intake's recorded exploration left an ambiguity
+    (`record_exploration`), refused after its claim, and refused a second time."""
+    replay.require(not _marker(intake_digest, "claim", ledger_dir).exists(),
+                   "selection opens only before the intake's claim")
+    explored = _marker(intake_digest, "exploration", ledger_dir)
+    replay.require(explored.is_file(), "selection opens only after this intake's exploration is recorded")
+    ambiguity = _state(explored, intake_digest).get("ambiguity")
+    replay.require(isinstance(ambiguity, list) and ambiguity,
+                   "selection opens only on an ambiguity this intake's exploration recorded")
+    try:
+        _create(_marker(intake_digest, "selection", ledger_dir),
+                dict(intake_digest=intake_digest, state="opened", ambiguity=ambiguity))
     except FileExistsError:
         raise ValueError("the selection partition was already opened for this intake: it opens once") from None
 
 
 def require_selection(intake_digest, ledger_dir=None):
+    """A selection view's check before it is made: this intake's selection transition, and no claim yet."""
+    replay.require(not _marker(intake_digest, "claim", ledger_dir).exists(),
+                   "after the claim, selection opens through the claim's sealed views")
     _state(_marker(intake_digest, "selection", ledger_dir), intake_digest)
 
 
-def claim(intake_digest, ledger_dir=None):
-    """Claims the one evaluation of an intake: an exclusive create of its marker in state `claimed`."""
+def claim(intake_digest, intake_record, ledger_dir=None):
+    """Claims the one evaluation of an intake: an exclusive create of its marker in state `claimed`, holding the
+    intake's record (whose canonical sha256 is the digest), so a claim opens exactly the bytes its intake bound."""
+    import anim_fixture_round12 as round12
+
     path = _marker(intake_digest, "claim", ledger_dir)
+    replay.require(round12.sha256(round12.canonical_json(intake_record)) == intake_digest,
+                   "the claim's record is not its intake's")
     try:
-        _create(path, dict(intake_digest=intake_digest, state="claimed"))
+        _create(path, dict(intake_digest=intake_digest, state="claimed", record=intake_record))
     except FileExistsError:
         _state(path, intake_digest)
         raise ValueError("this intake was already evaluated (its claim exists): it is evaluated once") from None
@@ -349,15 +380,25 @@ def require_claim(intake_digest, ledger_dir=None):
         path = None
     replay.require(path is not None and path.is_file(),
                    "the confirmation partition opens only after the intake's claim (anim_twist_seal.evaluate)")
-    _state(path, intake_digest)
+    return _state(path, intake_digest)
+
+
+def claimed_record(intake_digest, ledger_dir=None):
+    """The intake record a complete claim holds, its canonical sha256 the claim's digest."""
+    import anim_fixture_round12 as round12
+
+    found = require_claim(intake_digest, ledger_dir).get("record")
+    replay.require(isinstance(found, dict) and round12.sha256(round12.canonical_json(found)) == intake_digest,
+                   "the claim holds no record of its intake")
+    return found
 
 
 def mark(intake_digest, state, ledger_dir=None):
     """Moves a complete claim to `state` by atomic replacement."""
     path = _marker(intake_digest, "claim", ledger_dir)
-    _state(path, intake_digest)
+    content = _state(path, intake_digest)
     staged = path.with_name(f".{path.name}.{os.getpid()}")
-    staged.write_text(json.dumps(dict(intake_digest=intake_digest, state=state), sort_keys=True) + "\n")
+    staged.write_text(json.dumps(dict(content, state=state), sort_keys=True) + "\n")
     os.replace(staged, path)
 
 
@@ -397,21 +438,26 @@ def b5a_verdict(observe, views, unityrs, intake_record, expected=None):
         return [f"the B5a evaluation failed: {type(exc).__name__}: {exc}"[:500]]
 
 
-def twist_verdict(freeze, intake_record, views, unityrs, twist_rule):
-    """The twist verdict through its own views: `none` refuses all twist unevaluated; otherwise the frozen rule
-    gives {Editor: failures}, both Editors must pass and every byte read must be the intake's. Any failure, an
-    exception or a twist-only case a run lacks included, refuses all twist."""
+def twist_verdict(freeze, intake_record, views, unityrs, top=TOP):
+    """The twist verdict through its own views (a callable giving them, made only when twist runs): `none` refuses
+    all twist unevaluated, its rule never loaded; otherwise the frozen rule, loaded from the pinned bytes only now,
+    after B5a's verdict is written, gives {Editor: failures}, both Editors must pass and every byte read must be the
+    intake's. Any failure, an exception loading the rule or a twist-only case a run lacks or misauthored included,
+    refuses all twist."""
     import anim_fixture_round12 as round12
     from anim_muscle_confirm import EDITORS
 
     if freeze["candidate"] == "none":
         return dict(admitted="none", failures=[f"twist refused everywhere: the freeze is none ({freeze['reason']})"])
-    lacking = {e: row["twist_only_lacking"] for e, row in sorted(intake_record["round12"].items())
-               if row["twist_only_lacking"]}
-    if lacking:
-        return dict(admitted="none", failures=[f"{e}: a twist-only collection failure: {len(cases)} case(s) lacking, "
-                                               f"{cases[:3]}" for e, cases in lacking.items()])
+    failures = [f"{e}: a twist-only collection failure: {len(row[key])} case(s) {word}, {row[key][:3]}"
+                for e, row in sorted(intake_record["round12"].items())
+                for key, word in (("twist_only_lacking", "lacking"), ("twist_only_misauthored", "misauthored"))
+                if row[key]]
+    if failures:
+        return dict(admitted="none", failures=failures)
     try:
+        twist_rule = load_hook(freeze, "twist_rule", top)
+        views = views()
         found = twist_rule(freeze["candidate"], views, unityrs)
         failures = [f"no twist verdict for Editor {e}" for e in EDITORS if e not in found]
         failures += [f"{e}: {line}" for e, lines in sorted(found.items()) for line in lines]
@@ -421,15 +467,15 @@ def twist_verdict(freeze, intake_record, views, unityrs, twist_rule):
     return dict(admitted="none" if failures else freeze["candidate"], failures=failures)
 
 
-def evaluate_bound(freeze, round12_folders, round11_folders, unityrs, ledger_dir=None, expected=None, top=TOP):
-    """The evaluation of a bound freeze: its hooks loaded from the pinned bytes; the folders' intake digest the
-    frozen one; the claim; B5a, recorded; then twist."""
+def _evaluate(freeze, round12_folders, round11_folders, unityrs, ledger_dir=None, expected=None, top=TOP):
+    """The evaluation of a freeze `evaluate` bound (private: no other path spends the claim): B5a's observer loaded
+    from the pinned bytes; the folders' intake digest the frozen one; the claim; B5a, recorded; then twist."""
     import anim_fixture_round12 as round12
 
-    observe, twist_rule = (load_hook(freeze, name, top) for name in HOOKS)
+    observe = load_hook(freeze, "observe_b5a", top)
     digest, intake_record = round12.intake(round12_folders, round11_folders)
     replay.require(digest == freeze["intake_digest"], "the runs are not the frozen intake's")
-    claim(digest, ledger_dir)
+    claim(digest, intake_record, ledger_dir)
     try:
         record(digest, dict(event="claimed", candidate=freeze["candidate"], intake=intake_record), ledger_dir)
         runs12 = {e: f for e, f, _ in _runs(intake_record["round12"], round12_folders)}
@@ -437,8 +483,8 @@ def evaluate_bound(freeze, round12_folders, round11_folders, unityrs, ledger_dir
         b5a = b5a_verdict(observe, sealed_views(runs12, runs11, digest, ledger_dir), unityrs, intake_record, expected)
         record(digest, dict(event="b5a", passed=not b5a, failures=b5a), ledger_dir)
         mark(digest, "b5a", ledger_dir)
-        twist = twist_verdict(freeze, intake_record, sealed_views(runs12, runs11, digest, ledger_dir), unityrs,
-                              twist_rule)
+        twist = twist_verdict(freeze, intake_record, lambda: sealed_views(runs12, runs11, digest, ledger_dir),
+                              unityrs, top)
     except Exception as exc:
         record(digest, dict(event="failed", error=f"{type(exc).__name__}: {exc}"[:500]), ledger_dir)
         mark(digest, "failed", ledger_dir)
@@ -459,9 +505,10 @@ def _runs(recorded, folders):
 
 
 def evaluate(round12_folders, round11_folders, unityrs, path=FREEZE_PATH):
-    """The one evaluation: the canonical committed freeze bound, then `evaluate_bound` with its frozen hooks."""
+    """The one evaluation, the only public path to the claim: the canonical committed freeze and its executable
+    bound (`bind`), then `_evaluate` with its frozen hooks."""
     freeze, _, unityrs = bind(path, unityrs)
-    return evaluate_bound(freeze, round12_folders, round11_folders, unityrs)
+    return _evaluate(freeze, round12_folders, round11_folders, unityrs)
 
 
 def main():

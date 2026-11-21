@@ -26,25 +26,27 @@ and case export) keep round 11's permissive view (`round11_own_view`).
 digest, importer note and Editor sources sha256, this checkout's fixture revision; build.log's run stamp); its
 inventory lists every table case; its authored curves are the tables' (anim_round12_tables.check_authored); each
 read capture names its own case, run, Editor version and bundle, is the builder's fixture (its prefab, clip and
-Avatar assets, resolved through the bundle's container, and its playback: anim_fixture_contract.check_identity),
+Avatar assets by the tables' variant and placement, each resolved through the bundle's container, and its playback:
+anim_fixture_contract.check_identity),
 pins its bundle's sha256 and has the tables' sample times bit for bit. A clip case's built clip compiles exactly
 its case's muscles, each slot owned by its own binding through m_IndexArray (anim_muscle_clip.compiled_muscles,
 which the Editor may leave unverified), and a subset clip's compiled value at each key is the authored f32.
 
 A run may lack a twist-only case (TWIST_ONLY: a probe, toe-absent, subset or twist clip case), or author one
-wrongly: the case is listed as lacking, which refuses all twist and leaves B5a standing. A B5a case (a sweep or a
-twin) it lacks refuses the intake.
+wrongly: the case is listed as lacking or misauthored, which refuses all twist and leaves B5a standing. A B5a case
+(a sweep or a twin) it lacks or misauthors refuses the intake.
 
 **Intake digest** (`intake`): the sha256 of canonical JSON over the fixture revision, the tables' sha256 and
 digest, the partition digest, both Editors' round 12 runs and round 11's reused files, each run under the Editor
-its run.json declares. A round 12 run's hashed set is exactly its inventory's: every run file, a capture and a
-bundle for each case it records, any case's diagnostics, nothing else in replays/body or bundles. The intake
+its run.json declares. A round 12 run's hashed set is exactly its manifests': every run file, a capture and a
+bundle for each case run.json marks recorded or inventory.json matched (whatever its authored curves), any case's diagnostics, nothing else in replays/body or bundles. The intake
 hashes sealed files' raw bytes and checks, by byte search alone, that each capture carries its own run's id and
 Editor version and no other run's id, and that each bundle's UnityFS header names its run's Editor version. It
 never parses or decodes a sealed file: that happens after the claim, through sealed views.
 """
 
 import argparse
+import collections
 import hashlib
 import json
 import os
@@ -116,16 +118,28 @@ def bundle_of(row):
     return row["name"].replace("probes-", "")
 
 
+def full_clip(case):
+    """(variant, root placement) of a twist clip or twin case, as the builder's tables name it
+    (anim_round12_tables.full_clips), never parsed from the name: a variant may itself end in `-offset`."""
+    if "full_clips" not in _TABLES:
+        import anim_round12_tables as r12
+
+        _TABLES["full_clips"] = {name: (variant, root) for name, _, _, variant, root in r12.full_clips()}
+    return _TABLES["full_clips"][case]
+
+
 def fixture_of(row):
     """The builder's fixture of a round 12 case (anim_fixture_contract.Fixture): a SetHumanPose case plays its
     bundle's `-muscles` clip by HumanPoseHandler, a subset case that clip through the Animator, and a twist clip
-    or twin its rig's clip `body-clip-<rig>-<twist|twin>-<variant>` from the identity or offset prefab."""
+    or twin its rig's clip `body-clip-<rig>-<twist|twin>-<variant>` (UnityrsBodyClips.cs ClipName) from the prefab
+    of its root placement."""
     from anim_fixture_body import _fixture
 
     bundle = bundle_of(row)
     if row["family"] in ("twist-clip", "twin"):
-        clip = row["name"].removesuffix("-offset")
-        return _fixture(bundle, "offset" if row["name"].endswith("-offset") else "identity", clip, "clip")
+        variant, root = full_clip(row["name"])
+        tag = "twist" if row["family"] == "twist-clip" else "twin"
+        return _fixture(bundle, root, f"body-clip-{row['rig']}-{tag}-{variant}", "clip")
     return _fixture(bundle, "identity", bundle + "-muscles", "clip" if row["family"] == "subset" else "probes")
 
 
@@ -250,6 +264,8 @@ def readers(unityrs):
 
     def avatar_of(view, case, doc):
         found = view_of(view, case, doc)
+        # The prefab resolves in the bundle's container too (anim_replay_complete's GameObject lookup).
+        found.asset(doc["spec"]["prefab_asset"], 1)
         return found.value(found.asset(doc["spec"]["avatar_asset"], 90))
 
     def clip_of(view, case, doc):
@@ -268,7 +284,7 @@ def manifest_of(view):
     return manifest["run"], statuses(manifest)
 
 
-def _authored_lacking(authored, doc, lacking):
+def _misauthored(authored, doc):
     """The cases whose authored curves fail check_authored, refusing unless each is twist-only: each problem's
     clip (its label, or the case it names) mapped to its cases."""
     import anim_round12_tables as r12
@@ -281,13 +297,24 @@ def _authored_lacking(authored, doc, lacking):
         cases = clips.get(label) or ([label] if label in families else [])
         replay.require(cases and all(families.get(case) in TWIST_ONLY for case in cases),
                        f"authored.json: {line}")
-        found |= set(cases) - set(lacking)
+        found |= set(cases)
     return found
 
 
+class RunFiles(collections.namedtuple("RunFiles", "run statuses recorded lacking misauthored")):
+    """A round 12 run's run files: its identity, {case: status} from run.json, the cases either manifest marks
+    recorded or matched (whose capture and bundle must exist), the twist-only cases it lacks (not both) and those
+    it authored wrongly."""
+
+    @property
+    def unusable(self):
+        """The twist-only cases the twist verdict cannot use: lacking or misauthored."""
+        return sorted(set(self.lacking) | set(self.misauthored))
+
+
 def check_run_files(view):
-    """A round 12 run's run files (no capture opened): (run identity, {case: status}, the twist-only cases it lacks
-    or authored wrongly). Every B5a case must be recorded with the tables' samples and authored as the tables."""
+    """A round 12 run's run files, no capture opened (`RunFiles`). Every B5a case must be recorded with the
+    tables' samples and authored as the tables."""
     from anim_replay_complete import run_stamp
 
     doc, tables_sha256 = tables()
@@ -308,15 +335,16 @@ def check_run_files(view):
                    and inventory.get("extra") == [] and sorted(row.get("name") for row in found) == sorted(partitions()),
                    f"{view.folder.name}: inventory.json does not list every round 12 case once with nothing extra")
     families = {name: row["family"] for name, row in rows().items()}
-    lacking = {row["name"] for row in found if row.get("status") != "matched"} | {
-        case for case in families if statuses.get(case) != "recorded"}
+    matched = {row["name"] for row in found if row.get("status") == "matched"}
+    recorded = {case for case in families if statuses.get(case) == "recorded"}
+    lacking = set(families) - (matched & recorded)
     b5a = sorted(case for case in lacking if families[case] not in TWIST_ONLY)
     replay.require(not b5a, f"{view.folder.name}: B5a case(s) not recorded with the tables' samples: {b5a[:5]}")
     authored = replay.read_json(view.run_file("authored.json").decode("utf-8"))
     replay.require(isinstance(authored, dict) and authored.get("run_id") == run["run_id"],
                    f"{view.folder.name}: authored.json is another run's")
-    lacking |= _authored_lacking(authored, doc, lacking)
-    return run, statuses, sorted(lacking)
+    return RunFiles(run, statuses, sorted(matched | recorded), sorted(lacking),
+                    sorted(_misauthored(authored, doc)))
 
 
 def muscle_curves(case, row):
@@ -324,8 +352,7 @@ def muscle_curves(case, row):
     (anim_round12_tables.expected_curves, each Linear) as floats, its body and motion curves left out."""
     import anim_round12_tables as r12
 
-    variant = None if row["family"] == "subset" else {name: v for name, _, _, v, _ in r12.full_clips()}[
-        case.removesuffix("-offset")]
+    variant = None if row["family"] == "subset" else full_clip(case)[0]
     return {prop: (tuple(map(r12._value, times)), tuple(map(r12._value, values)))
             for prop, (times, values, _, mode) in r12.expected_curves(row, tables()[0], variant).items()
             if mode == "Linear"}
@@ -360,7 +387,8 @@ def complete(view, readers_, cases=None):
     import anim_round12_tables as r12
     from anim_fixture_contract import check_identity
 
-    run, _, lacking = check_run_files(view)
+    files = check_run_files(view)
+    run, lacking = files.run, files.unusable
     avatar_of, clip_of = readers_
     found = {}
     for case in sorted(rows() if cases is None else cases):
@@ -443,9 +471,10 @@ def _stamped(parts, data, run_id, version, others):
                        f"{name} is not a bundle of Unity {version}")
 
 
-def round12_files(folder, lacking, stamps):
-    """Exactly the inventory's set: every run file, the capture and bundle of each case it records (a lacking
-    twist-only case's if present), any case's diagnostics, and nothing else in replays/body or bundles."""
+def round12_files(folder, recorded, stamps):
+    """Exactly the manifests' set: every run file, the capture and bundle of each case either manifest marks
+    recorded or matched (`recorded`; any other case's if present), any case's diagnostics, and nothing else in
+    replays/body or bundles. An authored failure never excuses a missing file."""
     names = [(name,) for name in RUN_FILES]
     captures, bundles = _listing(folder, "replays", "body"), _listing(folder, "bundles")
     wanted = {name: (f"{name}.pending.json", bundle_of(row)) for name, row in rows().items()}
@@ -453,7 +482,7 @@ def round12_files(folder, lacking, stamps):
     replay.require(captures <= allowed, f"replays/body holds files no case records: {sorted(captures - allowed)[:3]}")
     replay.require(bundles <= {bundle for _, bundle in wanted.values()},
                    f"bundles holds files no case builds: {sorted(bundles - {b for _, b in wanted.values()})[:3]}")
-    missing = sorted(file for case, files in wanted.items() if case not in lacking
+    missing = sorted(file for case, files in wanted.items() if case in recorded
                      for file in files if file not in captures | bundles)
     replay.require(not missing, f"{Path(folder).name}: recorded cases lack {missing[:3]}")
     names += [("replays", "body", file) for file in captures] + [("bundles", file) for file in bundles]
@@ -476,10 +505,11 @@ def intake(round12, round11):
 
     runs, reused = by_editor(round12, "round 12"), by_editor(round11, "round 11")
     ids = {r for _, r, _ in runs.values()} | {r for _, r, _ in reused.values()}
-    views, lacking = [], {}
+    views, files = [], {}
     for editor, (folder, run_id, _) in runs.items():
         view = round12_view(folder)
-        run, _, lacking[editor] = check_run_files(view)
+        files[editor] = check_run_files(view)
+        run = files[editor].run
         replay.require(run["run_id"] == run_id, f"Editor {editor}'s round 12 run changed while it was read")
         views.append((editor, "round12", view))
     for editor, (folder, _, _) in reused.items():
@@ -488,8 +518,9 @@ def intake(round12, round11):
     doc, tables_sha256 = tables()
     record = dict(format=FORMAT, version=1, fixture_revision=editor_sources_sha256(), tables_sha256=tables_sha256,
                   tables_digest=doc["tables_digest"], partition_digest=partition_digest(),
-                  round12={e: dict(run_id=r, twist_only_lacking=lacking[e],
-                                   files=round12_files(f, lacking[e], (r, v, ids - {r})))
+                  round12={e: dict(run_id=r, twist_only_lacking=files[e].lacking,
+                                   twist_only_misauthored=files[e].misauthored,
+                                   files=round12_files(f, files[e].recorded, (r, v, ids - {r})))
                            for e, (f, r, v) in sorted(runs.items())},
                   round11={e: dict(run_id=r, files=round11_files(f, (r, v, ids - {r})))
                            for e, (f, r, v) in sorted(reused.items())})

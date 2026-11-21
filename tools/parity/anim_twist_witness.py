@@ -150,7 +150,8 @@ def load_rig(folder, rig, unityrs, views, run):
     digest = bundle_digest(bundle)
     replay.require(capture["bundle_sha256"] == [digest], f"{bundle.name} differs from the capture's pinned sha256")
     if (bundle, digest) not in views:
-        views[(bundle, digest)] = BundleView(bundle, digest, 0, unityrs, None, replay, read_manifest(folder, replay)[1])
+        views[(bundle, digest)] = BundleView(bundle, digest, 0, unityrs, None, replay,
+                                             read_manifest(allow.private(), replay)[1])
     view = views[(bundle, digest)]
     avatar = view.value(view.asset(spec["avatar_asset"], 90))
     human = human_of(avatar)

@@ -24,24 +24,6 @@ def observation(rows_, refused, editors=VERSIONS):
     return seen
 
 
-def avatar(**human):
-    """A decoded Avatar mapping every body bone, no fingers, each node with axes."""
-    found = dict(m_HumanBoneIndex=list(range(25)), m_LeftHand={"data": {"m_HandBoneIndex": []}},
-                 m_RightHand={"data": {"m_HandBoneIndex": []}}, m_HasTDoF=False,
-                 m_Skeleton={"m_Node": [{"m_AxesId": 0}] * 25, "m_ID": [1000 + k for k in range(25)]},
-                 m_ArmTwist=0, m_ForeArmTwist=0, m_UpperLegTwist=0, m_LegTwist=0)
-    return {"m_Avatar": {"m_Human": found | human, "m_RootMotionBoneIndex": -1}}
-
-
-def clip(*dofs, **fields):
-    """A decoded built clip mapping `dofs` in m_IndexArray."""
-    index = [-1] * 160
-    for k, dof in enumerate(dofs):
-        index[dof] = k
-    return {"m_MuscleClip": {"m_IndexArray": index, "m_ValueArrayReferencePose": []},
-            "m_ClipBindingConstant": {"genericBindings": []}} | fields
-
-
 class RefusalTests(unittest.TestCase):
     def test_the_pinned_reasons_follow_the_runtimes_precedence(self):
         pinned = b5a.pinned_refusals()
@@ -53,30 +35,6 @@ class RefusalTests(unittest.TestCase):
         self.assertEqual(pinned["body-clip-compact-full-keep-o1-y1-xz1-motion"], "unsupported_locomotion")
         self.assertEqual(pinned["body-clip-compact-full-level"], "unsupported_body_motion(body_slots)")
         self.assertNotIn("unsupported_humanoid_limb_twist(23)", pinned.values())
-
-    def test_runtime_refusal_is_humanoid_refusals_order(self):
-        body, twist, goal, motion = 7, 42 + 23, 14, 0
-        for found, expected in (
-                ((avatar(m_HumanBoneIndex=[-1] + list(range(1, 25))), clip(body), True), "missing_human_bone(0)"),
-                ((avatar(), clip(body, twist, goal, motion), False), "unsupported_animator_root"),
-                ((avatar(), clip(body, twist, m_ClipBindingConstant={"genericBindings": [
-                    dict(path=1003, typeID=4)]}), True), "conflicting_humanoid_writer(0)"),
-                ((avatar(), clip(body, twist, goal, motion), True), "unsupported_locomotion"),
-                ((avatar(), clip(body, twist, m_HasMotionFloatCurves=True), True), "unsupported_locomotion"),
-                ((avatar(), clip(body, twist, goal), True), "unsupported_humanoid_ik"),
-                ((avatar(), clip(body, twist, 140), True), "unsupported_translation_dof"),
-                ((avatar(m_HasTDoF=True), clip(body, twist), True), "unsupported_translation_dof"),
-                ((avatar(), clip(body, twist) | {"m_MuscleClip": {"m_IndexArray": clip(body)["m_MuscleClip"][
-                    "m_IndexArray"], "m_ValueArrayReferencePose": [0.]}}, True), "unsupported_additive_pose"),
-                ((avatar(), clip(body, twist), True), "unsupported_body_motion(body_slots)"),
-                ((avatar(m_UpperLegTwist=.5), clip(twist), True), "unsupported_humanoid_twist(m_UpperLegTwist)"),
-                ((avatar(), clip(twist), True), "unsupported_humanoid_limb_twist(23)"),
-                ((avatar(), clip(42), True), None)):
-            with self.subTest(expected=expected):
-                self.assertEqual(b5a.runtime_refusal(*found), expected)
-        root = avatar()
-        root["m_Avatar"]["m_RootMotionBoneIndex"] = 0
-        self.assertEqual(b5a.runtime_refusal(root, clip(body), True), "unsupported_locomotion")
 
 
 class B5aTests(unittest.TestCase):
