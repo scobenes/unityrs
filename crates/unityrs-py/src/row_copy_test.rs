@@ -112,8 +112,10 @@ pub(crate) fn before_core() -> PyResult<()> {
     handshake(&CORE_ARMED)
 }
 
-/// A full-path read's value decode, detached, as [`before_core`]
-/// ([`RowCopyBarrier::arm_decode`]): a decode holding the GIL fails it.
+/// A full-path read's value decode, within its closure as it starts
+/// reading, as [`before_core`] ([`RowCopyBarrier::arm_decode`]): a decode
+/// holding the GIL fails it. Armed on the calling thread, where the test's
+/// read runs inline.
 pub(crate) fn before_decode() -> PyResult<()> {
     handshake(&DECODE_ARMED)
 }

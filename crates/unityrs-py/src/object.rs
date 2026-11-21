@@ -183,9 +183,13 @@ impl NativeObject {
             .transpose()?;
         let meter = self.inner.file().meter();
         let native = py.detach(|| {
-            #[cfg(test)]
-            crate::row_copy_test::before_decode()?;
             crate::worker::run_read(&self.inner, tree.is_some(), || {
+                // Within the decode, as it reads: a read that reacquires
+                // the GIL fails the handshake.
+                #[cfg(test)]
+                if let Err(error) = crate::row_copy_test::before_decode() {
+                    return Ok(Err(error));
+                }
                 let parsed = self
                     .inner
                     .read_typetree(tree.as_ref(), check_read)

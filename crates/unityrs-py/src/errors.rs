@@ -68,10 +68,11 @@ pub(crate) fn text_of<'py>(py: Python<'py>, text: &str) -> PyResult<Bound<'py, P
 
 /// The `MemoryError` a failed allocation set, taken; with none pending, a
 /// `MemoryError` whose raising allocates nothing of ours: its argument is
-/// the interpreter's cached empty tuple. Its instance comes from `CPython`'s
-/// `MemoryError` free list, which is finite: once those preallocated
-/// instances are all in use, `CPython` allocates a new one, and if that fails
-/// too, `CPython` raises its own `MemoryError`, never a panic.
+/// the interpreter's cached empty tuple. This is best effort, not a
+/// guarantee: its instance comes from `CPython`'s finite `MemoryError` free
+/// list, and once that is empty `CPython` allocates one; if allocations keep
+/// failing, normalising the exception can still abort the interpreter
+/// (`CPython` 3.10 and 3.11), though never through a panic of ours.
 pub(crate) fn no_memory(py: Python<'_>) -> PyErr {
     PyErr::take(py).unwrap_or_else(|| PyMemoryError::new_err(()))
 }
