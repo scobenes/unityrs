@@ -4,7 +4,9 @@ anim_fixture_scope), and B4's inputs on every clip B4 reads: the exact chain rul
 Avatar skeleton's Transforms through m_TOS, and the clip settings root.rs reads (anim_fixture_round11)."""
 
 import copy
+import itertools
 import json
+import math
 import re
 import unittest
 import zlib
@@ -17,6 +19,7 @@ import anim_fixture_full as full  # noqa: E402
 import anim_fixture_muscles as muscles  # noqa: E402
 import anim_fixture_round11 as r11  # noqa: E402
 import anim_fixture_scope as scope  # noqa: E402
+import anim_humanoid_qualify as qualify  # noqa: E402
 import anim_replay as replay  # noqa: E402
 import anim_body_runs as runs  # noqa: E402
 from anim_fixture_support import RUN  # noqa: E402
@@ -84,6 +87,45 @@ class PropertyTests(unittest.TestCase):
         # A refusal clip's Spine Left-Right, AuthorHumanoidClip's, is over it.
         self.assertIn("CombinedAxes = { -.25f, .375f, -.5f };", source("UnityrsHumanoidMotion.cs"))
         self.assertGreater(max(HUMANOID_SPINE["Spine Left-Right"]), scope.LATERAL_LIMIT)
+
+
+    def test_every_scoped_clip_turns_the_spine_well_over_the_recorders_threshold(self):
+        """The recorder (CheckHumanoidPlayback) and the pinned completion (anim_fixture_contract.check_spine)
+        each need the Spine to turn more than 1 degree from 0 to .5 and from .5 to 1. Every in-scope clip's
+        authored Spine turns 2 degrees or more on its own rig's limits, whichever sign each axis has (the angle
+        between two rotations does not depend on the pre and post rotations)."""
+        clips = source("UnityrsBodyClips.cs")
+        self.assertIn('("Spine Front-Back", new[] { -.3125f, .125f, .1875f, -.0625f, -.125f }),', clips)
+        self.assertEqual(full.SCOPED_KEYS, {"Spine Front-Back": (-.3125, .125, .1875, -.0625, -.125)})
+        self.assertIn("min = new Vector3(-18, -32, -12), max = new Vector3(42, 14, 26),",
+                      source("UnityrsHumanoidFixture.cs"))
+        self.assertEqual(full.TALL_SPINE_LIMITS, ((-18, -32, -12), (42, 14, 26)))
+        self.assertEqual({full.spine_limits(rig) for rig in full.SCOPED_RIGS},
+                         {full.DEFAULT_SPINE_LIMITS, full.TALL_SPINE_LIMITS})
+        spine = ("Spine Twist Left-Right", "Spine Left-Right", "Spine Front-Back")  # axes x, y, z
+        identity = (0., 0., 0., 1.)
+
+        def turn(rig, a, b, signs):
+            low, high = full.spine_limits(rig)
+            axes = {"m_Sgn": signs, "m_Limit": {"m_Min": [math.radians(v) for v in low],
+                                                 "m_Max": [math.radians(v) for v in high]},
+                    "m_PreQ": identity, "m_PostQ": identity}
+            p, q = (qualify.muscle_rotation(axes, [(muscles_at[name], axis) for axis, name in enumerate(spine)])
+                    for muscles_at in (a, b))
+            return math.degrees(2 * math.acos(min(1., abs(sum(x * y for x, y in zip(p, q))))))
+
+        least = {}
+        for rig in full.SCOPED_RIGS:
+            keys = [full.authored_muscles(list(NAMES), rig, time) for time in (0, .5, 1)]
+            least[rig] = min(turn(rig, a, b, signs) for a, b in zip(keys, keys[1:])
+                             for signs in itertools.product((1., -1.), repeat=3))
+            with self.subTest(rig=rig):
+                self.assertGreaterEqual(least[rig], 2.)
+        # The tall Spine's narrow limits are the least turn; before the zero crossing it was under 1 degree.
+        self.assertEqual(min(least, key=least.get).split("-")[0], "tall")
+        before = dict(full.authored_muscles(list(NAMES), "tall-scoped", 1))
+        mid = dict(full.authored_muscles(list(NAMES), "tall-scoped", .5), **{"Spine Front-Back": -.1875})
+        self.assertLess(turn("tall-scoped", mid, before, (1., 1., 1.)), 1.)
 
 
 class ScopeTests(unittest.TestCase):
@@ -275,7 +317,8 @@ class CompiledScopeTests(unittest.TestCase):
                 scope.check_scope(name, "refusal", doc, authored, bare, replay)
 
     def test_a_malformed_lateral_slot_refuses(self):
-        # A muscle the clip does not curve (m_IndexArray -1) plays 0; any other unreadable slot is an error.
+        # A muscle the clip does not curve (m_IndexArray -1, no binding) plays 0; any other unreadable slot is an
+        # error, a -1 beside the attribute's compiled binding (orphaned, which clip.rs refuses) too.
         name = "body-clip-large-scoped-orientation-offset"
         attribute = body.MUSCLE_ATTRIBUTE + 4  # Chest Left-Right
         with round11_docs():
@@ -283,7 +326,8 @@ class CompiledScopeTests(unittest.TestCase):
             authored = body._authored(doc["spec"]["evidence"]["editor"], replay)
             index = clip["m_MuscleClip"]["m_IndexArray"]
             other = next(slot for k, slot in enumerate(index) if slot >= 0 and k != attribute)
-            for edit, pattern in ((lambda index: index.__setitem__(attribute, other), "is malformed"),
+            for edit, pattern in ((lambda index: index.__setitem__(attribute, -1), "orphaned binding"),
+                                  (lambda index: index.__setitem__(attribute, other), "is malformed"),
                                   (lambda index: index.__setitem__(attribute, len(index) + 999), "is malformed"),
                                   (lambda index: index.__setitem__(attribute, "1"), "no entry"),
                                   (lambda index: index.__delitem__(slice(attribute, None)), "no entry")):

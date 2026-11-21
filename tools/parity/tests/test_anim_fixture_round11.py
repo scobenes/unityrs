@@ -266,6 +266,11 @@ class Round11InventoryTests(unittest.TestCase):
         self.assertEqual(kinds[:10], ["targets", "clip"] * 5)
         self.assertEqual(kinds[10:], ["clip"] * (655 + scoped) + ["probes"] * 4)
         self.assertEqual(len(r11.ROUND11_BUNDLES), 5 + 15 + 4 + 27 + 4)
+        # docs/anim_reference.md's case table accounts for every body case, round 11's included.
+        table = (HERE.parents[1] / "docs" / "anim_reference.md").read_text(encoding="utf-8").split("| Cases |")[1]
+        counts = re.findall(r"^\| `body-[^|]*\((\d+)\) \|", table.split("\n\n")[0], re.M)
+        self.assertEqual(sum(map(int, counts)), len(set(body.BODY_CASES) | set(r11.ROUND11_CASES)))
+        self.assertEqual(len(set(body.BODY_CASES) | set(r11.ROUND11_CASES)), 1111)
         # Only the in-scope clips declare the frozen scope; every other clip is refusal evidence.
         declared = {name: info.get("scope") for name, info in r11.ROUND11_INFO.items()}
         self.assertEqual({name for name, value in declared.items() if value == "in"},
@@ -341,16 +346,44 @@ class MuscleSweepTests(unittest.TestCase):
         self.assertIn('const string BodyRound = "11";', text)
         self.assertIn('"{\\"format\\": \\"unityrs.fixture_round\\", \\"round\\": " + BodyRound + ", \\"run_id\\": \\"" '
                       '+ runId + "\\"}\\n"', text)
-        # Only a recorded run declares the round, and only a recorded run's dialog says ready.
+        # Only a recorded Built-in run declares the round. Only the Built-in build-only run's dialog says not
+        # recorded; the URP and Android runs, which record nothing by design, say ready and to send them.
         builder = source("UnityrsFixtureBuilder.cs")
         self.assertIn('if (run.variant == "builtin" && variant.Record) WriteRound(staging, run.run_id);', builder)
-        self.assertIn('if (failures.Length == 0 && !variant.Record)\n'
+        self.assertIn('bool buildOnly = run.variant == "builtin" && !variant.Record;\n'
+                      '            if (failures.Length == 0 && buildOnly)\n'
                       '                EditorUtility.DisplayDialog("unityrs fixtures built, not recorded",', builder)
+        self.assertIn('else if (failures.Length == 0 && !variant.Record)\n'
+                      '                EditorUtility.DisplayDialog("unityrs fixtures ready",\n'
+                      '                    "The " + run.variant + " bundles were built and checked. '
+                      'Zip this folder and send it.', builder)
+        variants = source("UnityrsFixtureVariants.cs")
+        self.assertEqual(re.findall(r'Name = "(\w+)"', variants), ["builtin", "urp", "android"])
+        self.assertNotIn("Record = true", variants)
         # Both humanoid refusal probes are required, as completion requires them.
         self.assertIn('report.AddDeferred(name, "The coverage fixture was not prepared.", '
                       'name == TwistCase || name == SettingsCase);', source("UnityrsCoverageFixtures.cs"))
         self.assertIn('return rows.Where(row => row.status == "failed" || required.Contains(row.name) '
                       '&& row.status == "not_covered")', builder)
+
+    def test_the_editor_runs_completions_response_and_twist_checks(self):
+        # A sweep whose single-muscle sample leaves its bone still, or an in-scope clip whose recorded pose
+        # twists the shoulders past the freeze's limit, fails in the Editor, before it is marked recorded.
+        recording = source("UnityrsBodyRecording.cs")
+        limit = json.loads(FREEZE.read_text(encoding="utf-8"))["bounds"]["twist_limit"]
+        self.assertIn(f"const double LeastTurn = {r11.LEAST_TURN}, TwistLimit = {limit!r};", recording)
+        self.assertEqual(tuple(re.findall(r'"(\w+)"', re.search(r"FrameBones = \{(.*?)\};", recording).group(1))),
+                         scope.FRAME_BONES)
+        self.assertIn('if (fixture.Body.Variant == "muscle")', recording)
+        self.assertIn('if (fixture.Body.Kind == "clip" && fixture.Body.Spec.Scoped)', recording)
+        self.assertIn("            CheckBodyResponse(capture as HumanCapture, fixture, body);\n"
+                      "            SetBodyEvidence(", source("UnityrsFixtureRecording.cs"))
+        # A hidden m_IndexArray records with a note, and completion verifies the index offline; a wrong one fails.
+        clips, builder = source("UnityrsBodyClips.cs"), source("UnityrsFixtureBuilder.cs")
+        self.assertIn("|| indexed && (track.attribute >= index.arraySize", clips)
+        self.assertIn('const string IndexUnverified = "index unverified in Editor";', builder)
+        self.assertIn("if (!outcome.indexed) report.Note(replay.OutputName, IndexUnverified);",
+                      source("UnityrsCoverageFixtures.cs"))
 
     def test_every_muscle_has_the_same_schedule(self):
         probed = [muscle for _, group in body.PROBE_GROUPS for muscle in group]

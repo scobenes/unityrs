@@ -170,8 +170,16 @@ static partial class UnityrsFixtureBuilder
     };
     static float Amplitude(string name, bool scoped) => scoped
         ? ScopedAmplitudes.Where(row => row.muscles.Contains(name)).Select(row => row.amplitude).DefaultIfEmpty(.5f).First() : .5f;
-    static float[] FullValues(int muscle, bool scoped) =>
-        BodyTimes.Select((_, key) => Amplitude(HumanTrait.MuscleName[muscle], scoped) * CurveUnit(muscle, key)).ToArray();
+    // An in-scope clip's Spine Front-Back crosses zero between the recorder's
+    // probes (its .5 key is 3/16, not -3/16), so the Spine turns well over the
+    // recorder's 1 degree from 0 to .5 and from .5 to 1 on every rig's limits,
+    // the tall Spine's narrow ones too (anim_fixture_full.py SCOPED_KEYS).
+    static readonly (string muscle, float[] keys)[] ScopedKeys = {
+        ("Spine Front-Back", new[] { -.3125f, .125f, .1875f, -.0625f, -.125f }),
+    };
+    static float[] FullValues(int muscle, bool scoped) => scoped && ScopedKeys.Any(row => row.muscle == HumanTrait.MuscleName[muscle])
+        ? ScopedKeys.First(row => row.muscle == HumanTrait.MuscleName[muscle]).keys.ToArray()
+        : BodyTimes.Select((_, key) => Amplitude(HumanTrait.MuscleName[muscle], scoped) * CurveUnit(muscle, key)).ToArray();
     // An in-scope clip curves every muscle whose bone the rig maps; a refusal
     // clip every such muscle but the Spine's three, which keep
     // AuthorHumanoidClip's curves (Left-Right .375). A muscle whose bone the
@@ -428,8 +436,10 @@ static partial class UnityrsFixtureBuilder
 
     // Before recording: the built clip keeps its playback mode, authored root
     // settings and compiled tracks. Anything Unity changed in the build fails the case.
-    static void CheckBuiltBody(ReplayCase replay, string path)
+    // False where Unity did not expose m_IndexArray, so the Editor could not verify the index.
+    static bool CheckBuiltBody(ReplayCase replay, string path)
     {
+        bool indexed = true;
         var bundle = AssetBundle.LoadFromFile(path);
         Require(bundle != null, "Cannot load the built body bundle " + replay.Bundle + ".");
         try
@@ -445,11 +455,12 @@ static partial class UnityrsFixtureBuilder
             {
                 Require(BodySettingsMatch(AnimationUtility.GetAnimationClipSettings(clip), replay.BodyClip),
                     "The built clip did not keep its authored root settings in " + replay.Bundle + ".");
-                CheckCompiledTracks(clip, replay.BodyClip, replay.OutputName, replay.Body.Spec.Full, replay.Body.Spec.Scoped,
-                    replay.Body.Mapped);
+                indexed = CheckCompiledTracks(clip, replay.BodyClip, replay.OutputName, replay.Body.Spec.Full,
+                    replay.Body.Spec.Scoped, replay.Body.Mapped);
             }
         }
         finally { bundle.Unload(true); }
+        return indexed;
     }
 
     // Animator attributes of the compiled humanoid tracks (as tools/parity/anim_fixture_body.py):
@@ -482,27 +493,30 @@ static partial class UnityrsFixtureBuilder
     // humanoid custom type 8) in m_ClipBindingConstant, the runtime track table:
     // a full-body clip's every curved muscle at its Animator attribute
     // (MuscleAttribute + muscle), which shows Unity bound the curve's property to
-    // that muscle. Where Unity exposes m_MuscleClip.m_IndexArray on the
-    // bundle-loaded clip, the track's attribute must also index that same slot,
-    // as playback reads it. A table Unity does not expose fails the case too:
-    // round 10 found it exposed in both Editors, and without it the run could
-    // not show its tracks bind. Completion then checks the slots' values.
-    static void CheckCompiledTracks(AnimationClip clip, BodyClipVariant variant, string name, bool full, bool scoped,
+    // that muscle. A binding table Unity does not expose fails the case: round 10
+    // found it exposed in both Editors, and without it the run could not show
+    // its tracks bind. m_MuscleClip.m_IndexArray is a private field the Editor
+    // may hide: where it is exposed on the bundle-loaded clip, each track's
+    // attribute must index that same slot, as playback reads it, and a wrong
+    // index fails the case; where it is not, this returns false and the case
+    // records with "index unverified in Editor" in run.json, and completion
+    // verifies the serialized index offline, as round 10 did. Completion
+    // checks the slots' values either way.
+    static bool CheckCompiledTracks(AnimationClip clip, BodyClipVariant variant, string name, bool full, bool scoped,
         string[] mapped)
     {
         using (var serialized = new SerializedObject(clip))
         {
             var slots = CompiledSlots(serialized);
             Require(slots != null, "Unity did not expose the compiled track table of the built clip for " + name + ".");
-            // Each slot through m_IndexArray, as playback and completion find it: a clip
-            // whose index Unity does not expose fails, never skips that check.
             var index = serialized.FindProperty("m_MuscleClip.m_IndexArray");
-            Require(index != null && index.isArray, "Unity did not expose m_IndexArray of the built clip for " + name + ".");
+            bool indexed = index != null && index.isArray;
             var missing = CompiledTracks(variant, full, scoped, mapped).Where(track => !slots.TryGetValue(track.attribute, out int slot)
-                || track.attribute >= index.arraySize
-                || index.GetArrayElementAtIndex(track.attribute).intValue != slot).Select(track => track.track).ToArray();
+                || indexed && (track.attribute >= index.arraySize
+                    || index.GetArrayElementAtIndex(track.attribute).intValue != slot)).Select(track => track.track).ToArray();
             Require(missing.Length == 0, "The built clip lost or moved its compiled " + string.Join(", ", missing)
-                + " track(s) in " + name + ".");
+                + " track(s) in " + name + (indexed ? " (m_IndexArray checked)." : " (m_IndexArray not exposed)."));
+            return indexed;
         }
     }
 

@@ -7,7 +7,8 @@ B5b needs complete replays that pass with the frozen refusals enforced, and repl
   `scope.lateral_limit`, and so is its compiled value, as playback reads it (the built clip's slot at the
   muscle's Animator attribute), at every recorded sample's time; and every recorded sample's shoulder-hip twist
   (anim_body_model.shoulder_hip_twist on Unity's recorded pose) is within its `bounds.twist_limit`. The twist is
-  a completion check on what Unity recorded, never a prediction.
+  a check on what Unity recorded, never a prediction; the Editor runs it too before it marks a case recorded
+  (UnityrsBodyRecording.cs CheckBodyResponse).
 - `refusal`: refusal evidence. Some spine Left-Right key is over the lateral limit, and so is some compiled
   value at a recorded sample's time, so Unity played frames outside the frozen scope.
 
@@ -62,14 +63,20 @@ def lateral_keys(authored, replay):
                   for key in authored.get(prop, {}).get("keys") or [])]
 
 
-def lateral_track(runtime, index, attribute, replay):
+def lateral_track(runtime, index, attribute, replay, bindings=()):
     """A spine Left-Right muscle's compiled track, or None for a muscle the clip does not curve (`m_IndexArray`
-    -1). A malformed slot refuses: no index entry, a slot outside the runtime table or bound to another
+    -1 and no humanoid binding for the attribute in `bindings`, the clip's genericBindings). A malformed slot
+    refuses: no index entry, a -1 entry beside a compiled binding for the attribute (an orphaned binding, which
+    the runtime refuses as a conflicting mapping, clip.rs), a slot outside the runtime table or bound to another
     attribute, or a table whose slots cannot be told apart."""
     replay.require(isinstance(index, list) and 0 <= attribute < len(index) and type(index[attribute]) is int,
                    f"the built clip's m_IndexArray has no entry for Animator attribute {attribute}")
     slot = index[attribute]
     if slot == -1:
+        orphaned = [row for row in bindings if row.get("typeID", row.get("classID")) == 95
+                    and row.get("customType") == 8 and row.get("attribute") == attribute]
+        replay.require(not orphaned, f"the built clip binds Animator attribute {attribute} but its m_IndexArray "
+                                     f"entry is -1 (an orphaned binding)")
         return None
     replay.require(0 <= slot < len(runtime) and runtime[slot][0] == (0, 95, attribute, 8, False)
                    and runtime[slot][1] is not None,
@@ -84,7 +91,9 @@ def compiled_lateral(doc, clip, replay):
     replay.require(all(name in names for name in LATERAL_MUSCLES), "the capture lacks a spine Left-Right muscle")
     runtime = _runtime_slots(clip, replay)
     index = clip.get("m_MuscleClip", {}).get("m_IndexArray")
-    tracks = [lateral_track(runtime, index, MUSCLE_ATTRIBUTE + names.index(name), replay) for name in LATERAL_MUSCLES]
+    bindings = clip.get("m_ClipBindingConstant", {}).get("genericBindings", [])
+    tracks = [lateral_track(runtime, index, MUSCLE_ATTRIBUTE + names.index(name), replay, bindings)
+              for name in LATERAL_MUSCLES]
     rows = []
     for sample in capture["samples"]:
         time = sample.get("effective_source", sample["local"])

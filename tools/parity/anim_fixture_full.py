@@ -75,7 +75,15 @@ SCOPED_RIGS = {"compact-scoped": ("compact", "", 1, SCOPED_ADMITTED),
 SCOPED_AMPLITUDES = ((("Spine Left-Right", "Chest Left-Right", "UpperChest Left-Right"), 3 / 16),
                      (("Spine Twist Left-Right", "Chest Twist Left-Right", "UpperChest Twist Left-Right"), 1 / 32),
                      (("Left Shoulder Front-Back", "Right Shoulder Front-Back"), 1 / 8))
+# An in-scope clip's own keys for a muscle, in place of amplitude * unit: the Spine Front-Back crosses zero
+# between the recorder's Spine probes at 0, .5 and 1, so the Spine turns well over its 1 degree there on every
+# rig's limits (spine_limits), the tall Spine's narrow ones too.
+SCOPED_KEYS = {"Spine Front-Back": (-.3125, .125, .1875, -.0625, -.125)}
 MODULI = (17, 13, 11, 13, 17)
+# The Avatar's Spine limits (min, max), degrees per axis (twist, left-right, front-back): HumanTrait's defaults,
+# and the tall rig's custom ones (UnityrsHumanoidFixture.cs DescribeHumanoid).
+DEFAULT_SPINE_LIMITS = ((-40., -40., -40.), (40., 40., 40.))
+TALL_SPINE_LIMITS = ((-18., -32., -12.), (42., 14., 26.))
 
 
 def topology(rig):
@@ -113,7 +121,14 @@ def amplitude(name, scoped):
     return next((value for names, value in SCOPED_AMPLITUDES if name in names), .5) if scoped else .5
 
 
+def spine_limits(rig):
+    """A full-body clip rig's Spine limits: the tall rig's custom ones on a tall topology, else the defaults."""
+    return TALL_SPINE_LIMITS if topology(rig) == "tall" else DEFAULT_SPINE_LIMITS
+
+
 def full_values(muscle, name, scoped):
+    if scoped and name in SCOPED_KEYS:
+        return SCOPED_KEYS[name]
     return tuple(amplitude(name, scoped) * unit(muscle, key) for key in range(len(BODY_TIMES)))
 
 

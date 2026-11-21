@@ -242,7 +242,10 @@ public static partial class AnimReplayRecorder
         if (fixture.HeldTime.HasValue)
             SetHeldEvidence(pending, spec, capture, fixture, target);
         if (body != null)
+        {
+            CheckBodyResponse(capture as HumanCapture, fixture, body);
             SetBodyEvidence(editor, fixture, body, capture, knownPose);
+        }
 
         // The final human_pose schema needs an inspected runtime slot
         // inventory. Keep these captures until the maintainer adds it.

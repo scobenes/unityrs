@@ -15,7 +15,7 @@ using UnityEngine;
 // eyes-jaw rig. Each sweep is a bundle of its own. B2 never reads them.
 static partial class UnityrsFixtureBuilder
 {
-    static readonly float[] MuscleValues = { 1, -1, .75f, -.75f, .5f, -.5f, .25f, -.25f, .125f, -.125f };
+    internal static readonly float[] MuscleValues = { 1, -1, .75f, -.75f, .5f, -.5f, .25f, -.25f, .125f, -.125f };
     static readonly float[][] MuscleCombined = { new[] { .6f, -.5f, .4f, -.3f }, new[] { -.6f, .5f, -.4f, .3f } };
 
     // Each limb twist muscle and the bone whose group it joins.
